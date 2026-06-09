@@ -11,6 +11,8 @@ import LinearProgress from "@mui/material/LinearProgress";
 import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
+import useMediaQuery from "@mui/material/useMediaQuery";
+import { useTheme } from "@mui/material/styles";
 
 import { useCancelJob, useJob, useJobEvents } from "../api/queries";
 import type { IJob, IJobEvent } from "../api/types";
@@ -197,6 +199,8 @@ export function JobDetailDialog({
   jobId,
   onClose,
 }: IJobDetailDialogProps): JSX.Element {
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
   const isOpen = jobId !== null;
   const { data: job, isLoading, isError } = useJob(jobId);
   const { data: events } = useJobEvents(jobId);
@@ -211,7 +215,13 @@ export function JobDetailDialog({
   const canCancel = job !== undefined && isCancellable(job.status);
 
   return (
-    <Dialog open={isOpen} onClose={onClose} maxWidth="sm" fullWidth>
+    <Dialog
+      open={isOpen}
+      onClose={onClose}
+      maxWidth="sm"
+      fullWidth
+      fullScreen={fullScreen}
+    >
       <DialogTitle>
         {job !== undefined ? `Job ${shortId(job.jobId)}` : "Job"}
       </DialogTitle>

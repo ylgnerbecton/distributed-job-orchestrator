@@ -2,6 +2,7 @@ import uuid
 
 from sqlalchemy import func, select
 
+from app.core.config import get_settings
 from app.db.models import DispatchOutbox, Job, JobEvent
 
 
@@ -56,3 +57,12 @@ def test_idempotency_key_creates_single_row(client, session) -> None:
         select(func.count()).select_from(Job).where(Job.idempotency_key == "idem-unique")
     ).scalar_one()
     assert count == 1
+
+
+def test_admission_control_rejects_over_quota(client, monkeypatch) -> None:
+    monkeypatch.setattr(get_settings(), "max_in_flight_jobs_per_user", 2)
+    assert client.post("/jobs", json={"type": "report"}).status_code == 202
+    assert client.post("/jobs", json={"type": "report"}).status_code == 202
+    over_quota = client.post("/jobs", json={"type": "report"})
+    assert over_quota.status_code == 429
+    assert "limit" in over_quota.get_json()["message"]

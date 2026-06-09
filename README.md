@@ -16,11 +16,18 @@ proposal is in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Dashboard
 
-The React + MUI dashboard polls the API and updates live. It shows status summary cards, a
-submit-job form, and a cursor-paginated jobs table that auto-polls, with a per-row cancel action
-and a job detail dialog that shows the event timeline.
+The React + MUI dashboard polls the API and updates live. It shows status summary cards with a
+per-status color accent, a submit-job form (with a per-type description), and a cursor-paginated
+jobs table that auto-polls, with status and type filters, a per-row cancel action, and a job
+detail dialog that shows the event timeline.
 
 ![Dashboard](docs/images/dashboard.png)
+
+The layout is fully responsive. On a phone the summary cards reflow to a two-column grid, the form
+stacks, and the jobs table becomes a list of compact cards (no horizontal scrolling); the detail
+dialog opens full screen.
+
+![Responsive dashboard on a phone](docs/images/dashboard-mobile.png)
 
 Interactive API documentation (Swagger UI) is served at `/docs`.
 
@@ -199,7 +206,7 @@ ownership is enforced on every job resource.
 | Method | Path | Description |
 | --- | --- | --- |
 | GET | `/health` | Liveness check, plus database and queue checks |
-| POST | `/jobs` | Submit a job; returns 202; accepts an `Idempotency-Key` header |
+| POST | `/jobs` | Submit a job; returns 202; accepts an `Idempotency-Key` header; returns 429 when the caller is over the per-user in-flight quota |
 | GET | `/jobs` | List the caller's jobs (cursor-paginated); filters: `status`, `type`, `limit`, `cursor` |
 | GET | `/jobs/{job_id}` | Full job status |
 | GET | `/jobs/summary` | Counts by status |
@@ -272,7 +279,8 @@ All configuration is environment-driven (`.env`, see `.env.example`).
 | `SCHEDULER_INTERVAL_SECONDS` | `2` | Scheduler loop interval |
 | `JOB_DEFAULT_MAX_ATTEMPTS` | `5` | Default attempt limit before dead-lettering |
 | `JOB_MAX_PAYLOAD_BYTES` | `65536` | Maximum accepted job payload size |
-| `JOB_QUEUE_MAX_AGE_SECONDS` | `3600` | Age after which a stuck-queued job is reaped |
+| `JOB_QUEUE_MAX_AGE_SECONDS` | `3600` | Age after which a pending or queued job is expired |
+| `MAX_IN_FLIGHT_JOBS_PER_USER` | `200` | Admission-control cap; submissions beyond it return 429 |
 | `RETRY_BASE_SECONDS` | `2.0` | Base delay for exponential backoff |
 | `NOTIFICATION_MAX_ATTEMPTS` | `8` | Notification delivery attempt limit |
 | `VITE_API_BASE_URL` | `http://localhost:8000` | API base URL used by the frontend |

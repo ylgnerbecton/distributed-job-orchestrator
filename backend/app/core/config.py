@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     job_default_max_attempts: int = 5
     job_max_payload_bytes: int = 65536
     job_queue_max_age_seconds: int = 3600
+    max_in_flight_jobs_per_user: int = 200
 
     handler_progress_steps: int = 10
     handler_step_seconds: float = 1.0

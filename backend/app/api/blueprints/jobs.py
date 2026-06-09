@@ -5,7 +5,7 @@ from flask_smorest import Blueprint, abort
 from app.api.deps import current_user_id, get_session
 from app.core.pagination import InvalidCursorError
 from app.domain.enums import JobPriority, JobStatus, JobType
-from app.domain.errors import PayloadTooLargeError
+from app.domain.errors import PayloadTooLargeError, TooManyActiveJobsError
 from app.schemas.common import MessageSchema
 from app.schemas.jobs import (
     CancelResultSchema,
@@ -36,6 +36,7 @@ class JobCollection(MethodView):
     @jobs_blueprint.response(202, JobAcceptedSchema)
     @jobs_blueprint.alt_response(413, schema=MessageSchema)
     @jobs_blueprint.alt_response(422, schema=MessageSchema)
+    @jobs_blueprint.alt_response(429, schema=MessageSchema)
     def post(self, body: dict) -> dict:
         service = JobSubmissionService(get_session(), current_app.config["APP_SETTINGS"])
         try:
@@ -49,6 +50,8 @@ class JobCollection(MethodView):
             )
         except PayloadTooLargeError as error:
             abort(413, message=str(error))
+        except TooManyActiveJobsError as error:
+            abort(429, message=str(error))
         except ValueError as error:
             abort(422, message=str(error))
         return {"job_id": str(job.id), "status": job.status, "status_url": f"/jobs/{job.id}"}

@@ -96,6 +96,35 @@ confirmed the workers stayed alive, the queue stayed bounded (around 15 to 22 en
 546), retries fired and resolved, and the batch drained cleanly. The dashboard and Swagger
 screenshots were captured from this running stack.
 
+## Follow-up iteration: responsive UI, admission control, and a stack review
+
+A second prompt asked to improve the layout and make it more responsive, to keep finding and
+filling gaps, and to reconsider whether Flask was the right choice.
+
+- Responsive UI. The dashboard was rebuilt for every screen size: the status summary cards reflow
+  with an auto-fit grid and carry a per-status color accent, the submit form gained a per-type
+  description, the jobs panel gained status and type filters, and on phones the wide jobs table is
+  replaced by a list of compact cards so nothing scrolls horizontally, with the detail dialog
+  opening full screen. This was verified by capturing real screenshots at desktop, tablet, and
+  phone widths, not just asserted.
+- Gap filled: admission control. The brief stresses high submission volume with unpredictable
+  spikes and per-user quotas, but submission was unbounded, a gap between the design and the
+  implementation. Added a configurable per-user in-flight cap that returns 429 when exceeded, with
+  a test. Added `.dockerignore` files as well, after noticing the frontend image's `COPY . .` would
+  copy the host `node_modules` over the freshly installed one.
+- The Flask question, answered honestly. Flask was kept, and this is the right call for this brief:
+  the company is a Flask shop and the architecture proposal lands on Flask, so the implementation
+  matches the proposal and demonstrates fit. The honest trade-off: FastAPI plus async would be a
+  marginally more natural fit for I/O-bound orchestration, but the concurrency model here is
+  process-based (a horizontally scalable worker fleet plus gunicorn API workers), which is exactly
+  what the proposal recommends, so synchronous Flask loses nothing material; flask-smorest covers
+  request validation and the generated OpenAPI and Swagger UI. Switching to FastAPI would have
+  contradicted both the brief and the proposal for no real gain.
+- The recurring annoyance worth recording: the repository's autofix formatter runs after every
+  edit and kept removing a just-added import before the follow-up edit that used it had landed, so
+  several imports had to be re-added once their usage was present. The lesson was to add the usage
+  first, then the import.
+
 ## Reflection
 
 - Where AI helped most: scaffolding a large, consistent, layered codebase quickly; writing the

@@ -23,3 +23,9 @@ class UnknownJobTypeError(ValueError):
 
 class PayloadTooLargeError(ValueError):
     pass
+
+
+class TooManyActiveJobsError(Exception):
+    def __init__(self, limit: int) -> None:
+        super().__init__(f"too many active jobs for this user, the limit is {limit}")
+        self.limit = limit

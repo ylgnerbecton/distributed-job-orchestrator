@@ -7,7 +7,7 @@ from app.core.clock import now as clock_now
 from app.core.config import Settings
 from app.db.models import Job
 from app.domain.enums import JobEventType, JobPriority, JobStatus, JobType
-from app.domain.errors import PayloadTooLargeError
+from app.domain.errors import PayloadTooLargeError, TooManyActiveJobsError
 from app.domain.job_catalog import normalize_payload
 from app.repositories.dispatch_outbox_repository import DispatchOutboxRepository
 from app.repositories.job_event_repository import JobEventRepository
@@ -65,6 +65,9 @@ class JobSubmissionService:
         now = clock_now()
         with self._session.begin():
             jobs = JobRepository(self._session)
+            active = jobs.count_active_for_user(user_id)
+            if active >= self._settings.max_in_flight_jobs_per_user:
+                raise TooManyActiveJobsError(self._settings.max_in_flight_jobs_per_user)
             job = Job(
                 user_id=user_id,
                 type=job_type.value,

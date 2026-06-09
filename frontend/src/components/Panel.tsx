@@ -31,13 +31,14 @@ export function Panel({
   children,
 }: IPanelProps): JSX.Element {
   return (
-    <Paper variant="outlined" sx={{ p: 2 }}>
+    <Paper variant="outlined" sx={{ p: { xs: 1.5, sm: 2.5 } }}>
       <Box
         sx={{
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
-          mb: 1.5,
+          gap: 1,
+          mb: 2,
         }}
       >
         <Typography variant="h6">{title}</Typography>

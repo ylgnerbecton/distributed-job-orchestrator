@@ -6,8 +6,9 @@ from sqlalchemy.orm import Session
 
 from app.core.pagination import CursorPosition
 from app.db.models import Job
-from app.domain.enums import JobStatus, JobType
+from app.domain.enums import TERMINAL_STATUSES, JobStatus, JobType
 
+_TERMINAL = [status.value for status in TERMINAL_STATUSES]
 _CLAIMABLE = [JobStatus.QUEUED.value, JobStatus.RETRYING.value]
 _FINALIZABLE = [JobStatus.RUNNING.value, JobStatus.CANCELLING.value]
 _INACTIVE_CANCELLABLE = [JobStatus.PENDING.value, JobStatus.QUEUED.value, JobStatus.RETRYING.value]
@@ -58,6 +59,10 @@ class JobRepository:
     def status_counts(self, user_id: str) -> dict[str, int]:
         stmt = select(Job.status, func.count()).where(Job.user_id == user_id).group_by(Job.status)
         return {row[0]: int(row[1]) for row in self._session.execute(stmt).all()}
+
+    def count_active_for_user(self, user_id: str) -> int:
+        stmt = select(func.count()).select_from(Job).where(Job.user_id == user_id, Job.status.notin_(_TERMINAL))
+        return int(self._session.execute(stmt).scalar_one())
 
     def find_due_retries(self, now: datetime, limit: int) -> list[Job]:
         stmt = (

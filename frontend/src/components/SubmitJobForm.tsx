@@ -30,6 +30,15 @@ const DEFAULT_PAYLOADS: Record<TJobType, Record<string, unknown>> = {
   llm_summary: { prompt: "Summarize the report", tokens: 150 },
 };
 
+const TYPE_DESCRIPTIONS: Record<TJobType, string> = {
+  sleep: "Long-running task that reports progress and supports cancellation.",
+  report: "Multi-step report generation that produces a small result.",
+  flaky: "Fails a set number of times, then succeeds (exercises retries).",
+  always_fail: "Non-retryable validation failure.",
+  llm_summary:
+    "Simulated language-model call; a provider rate limit is retryable.",
+};
+
 const DEFAULT_TYPE: TJobType = "sleep";
 const DEFAULT_PRIORITY: TJobPriority = "normal";
 const SNACKBAR_DURATION_MS = 5000;
@@ -108,6 +117,7 @@ export function SubmitJobForm(): JSX.Element {
           label="Type"
           value={jobType}
           onChange={handleTypeChange}
+          helperText={TYPE_DESCRIPTIONS[jobType]}
           fullWidth
           size="small"
         >
