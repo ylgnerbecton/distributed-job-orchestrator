@@ -1,5 +1,5 @@
+import asyncio
 import signal
-import time
 import uuid
 
 from redis.exceptions import RedisError
@@ -21,35 +21,45 @@ class Worker:
         execution_service: JobExecutionService,
         poll_timeout_seconds: int,
         error_backoff_seconds: float,
+        concurrency: int,
         worker_id: str,
     ) -> None:
         self._queue = queue
         self._execution_service = execution_service
         self._poll_timeout_seconds = poll_timeout_seconds
         self._error_backoff_seconds = error_backoff_seconds
+        self._concurrency = concurrency
         self._worker_id = worker_id
-        self._running = True
+        self._stop_event = asyncio.Event()
 
-    def request_stop(self, *_args: object) -> None:
-        self._running = False
+    def request_stop(self) -> None:
+        self._stop_event.set()
 
-    def run(self) -> None:
-        _logger.info("worker.started", worker_id=self._worker_id)
-        while self._running:
+    async def run(self) -> None:
+        _logger.info("worker.started", worker_id=self._worker_id, concurrency=self._concurrency)
+        consumers = [asyncio.create_task(self._consume_loop()) for _ in range(self._concurrency)]
+        await self._stop_event.wait()
+        for task in consumers:
+            task.cancel()
+        await asyncio.gather(*consumers, return_exceptions=True)
+        await self._queue.close()
+        _logger.info("worker.stopped", worker_id=self._worker_id)
+
+    async def _consume_loop(self) -> None:
+        while not self._stop_event.is_set():
             try:
-                job_id = self._queue.consume(self._poll_timeout_seconds)
+                job_id = await self._queue.consume(self._poll_timeout_seconds)
             except RedisError as error:
                 _logger.warning("worker.queue_unavailable", error=str(error))
-                time.sleep(self._error_backoff_seconds)
+                await asyncio.sleep(self._error_backoff_seconds)
                 continue
             if job_id is None:
                 continue
-            self._process(job_id)
-        _logger.info("worker.stopped", worker_id=self._worker_id)
+            await self._process(job_id)
 
-    def _process(self, job_id: str) -> None:
+    async def _process(self, job_id: str) -> None:
         try:
-            self._execution_service.execute(uuid.UUID(job_id))
+            await self._execution_service.execute(uuid.UUID(job_id))
         except ValueError:
             _logger.warning("worker.invalid_job_id", value=job_id)
         except Exception as error:
@@ -65,17 +75,23 @@ def build_worker(settings: Settings) -> Worker:
         execution_service,
         settings.worker_poll_timeout_seconds,
         settings.worker_error_backoff_seconds,
+        settings.worker_concurrency,
         worker_id,
     )
 
 
-def main() -> None:
+async def _run() -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
     worker = build_worker(settings)
-    signal.signal(signal.SIGINT, worker.request_stop)
-    signal.signal(signal.SIGTERM, worker.request_stop)
-    worker.run()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, worker.request_stop)
+    await worker.run()
+
+
+def main() -> None:
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

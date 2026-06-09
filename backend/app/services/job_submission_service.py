@@ -1,7 +1,7 @@
 import json
 
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import now as clock_now
 from app.core.config import Settings
@@ -15,11 +15,11 @@ from app.repositories.job_repository import JobRepository
 
 
 class JobSubmissionService:
-    def __init__(self, session: Session, settings: Settings) -> None:
+    def __init__(self, session: AsyncSession, settings: Settings) -> None:
         self._session = session
         self._settings = settings
 
-    def submit(
+    async def submit(
         self,
         *,
         user_id: str,
@@ -37,23 +37,23 @@ class JobSubmissionService:
         attempts_limit = max_attempts if max_attempts is not None else self._settings.job_default_max_attempts
 
         if idempotency_key is not None:
-            existing = self._find_existing(user_id, idempotency_key)
+            existing = await self._find_existing(user_id, idempotency_key)
             if existing is not None:
                 return existing
         try:
-            return self._create(user_id, job_type, normalized, priority, attempts_limit, idempotency_key)
+            return await self._create(user_id, job_type, normalized, priority, attempts_limit, idempotency_key)
         except IntegrityError:
             if idempotency_key is not None:
-                existing = self._find_existing(user_id, idempotency_key)
+                existing = await self._find_existing(user_id, idempotency_key)
                 if existing is not None:
                     return existing
             raise
 
-    def _find_existing(self, user_id: str, idempotency_key: str) -> Job | None:
-        with self._session.begin():
-            return JobRepository(self._session).get_by_idempotency_key(user_id, idempotency_key)
+    async def _find_existing(self, user_id: str, idempotency_key: str) -> Job | None:
+        async with self._session.begin():
+            return await JobRepository(self._session).get_by_idempotency_key(user_id, idempotency_key)
 
-    def _create(
+    async def _create(
         self,
         user_id: str,
         job_type: JobType,
@@ -63,9 +63,9 @@ class JobSubmissionService:
         idempotency_key: str | None,
     ) -> Job:
         now = clock_now()
-        with self._session.begin():
+        async with self._session.begin():
             jobs = JobRepository(self._session)
-            active = jobs.count_active_for_user(user_id)
+            active = await jobs.count_active_for_user(user_id)
             if active >= self._settings.max_in_flight_jobs_per_user:
                 raise TooManyActiveJobsError(self._settings.max_in_flight_jobs_per_user)
             job = Job(
@@ -82,7 +82,7 @@ class JobSubmissionService:
                 updated_at=now,
             )
             jobs.add(job)
-            self._session.flush()
+            await self._session.flush()
             JobEventRepository(self._session).record(
                 job_id=job.id,
                 event_type=JobEventType.SUBMITTED,

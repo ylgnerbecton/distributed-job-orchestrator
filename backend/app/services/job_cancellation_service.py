@@ -1,7 +1,7 @@
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import now as clock_now
 from app.domain.enums import TERMINAL_STATUSES, JobEventType, JobStatus
@@ -19,15 +19,15 @@ class CancelOutcome:
 
 
 class JobCancellationService:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    def cancel(self, job_id: uuid.UUID, user_id: str, reason: str | None) -> CancelOutcome:
+    async def cancel(self, job_id: uuid.UUID, user_id: str, reason: str | None) -> CancelOutcome:
         now = clock_now()
-        with self._session.begin():
+        async with self._session.begin():
             jobs = JobRepository(self._session)
             events = JobEventRepository(self._session)
-            job = jobs.lock_for_user(job_id, user_id)
+            job = await jobs.lock_for_user(job_id, user_id)
             if job is None:
                 return CancelOutcome(found=False, status=None)
             status = JobStatus(job.status)
@@ -36,7 +36,7 @@ class JobCancellationService:
             if status == JobStatus.CANCELLING:
                 return CancelOutcome(found=True, status=JobStatus.CANCELLING)
             if status == JobStatus.RUNNING:
-                jobs.request_running_cancellation(job_id, reason, now)
+                await jobs.request_running_cancellation(job_id, reason, now)
                 events.record(
                     job_id=job_id,
                     event_type=JobEventType.CANCEL_REQUESTED,
@@ -45,7 +45,7 @@ class JobCancellationService:
                     detail={"reason": reason},
                 )
                 return CancelOutcome(found=True, status=JobStatus.CANCELLING)
-            jobs.cancel_inactive(job_id, reason, now)
+            await jobs.cancel_inactive(job_id, reason, now)
             events.record(
                 job_id=job_id,
                 event_type=JobEventType.CANCELLED,
@@ -53,7 +53,7 @@ class JobCancellationService:
                 to_status=JobStatus.CANCELLED,
                 detail={"reason": reason},
             )
-            enqueue_terminal_notification(
+            await enqueue_terminal_notification(
                 NotificationOutboxRepository(self._session),
                 job=job,
                 event_type=JobEventType.CANCELLED,

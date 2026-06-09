@@ -35,11 +35,11 @@ export function StatusSummary(): JSX.Element {
 
   return (
     <Panel
-      title="Status Summary"
+      title="Overview"
       isLoading={isLoading}
       isError={isError || data === undefined}
       errorMessage="Failed to load status summary."
-      skeletonHeight={120}
+      skeletonHeight={96}
       action={
         data !== undefined ? (
           <Chip label={`${data.total} total`} color="primary" size="small" />
@@ -50,31 +50,25 @@ export function StatusSummary(): JSX.Element {
         <Box
           sx={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(112px, 1fr))",
-            gap: { xs: 1.25, sm: 2 },
+            gridTemplateColumns: "repeat(auto-fit, minmax(124px, 1fr))",
+            gap: { xs: 1, sm: 1.5 },
           }}
         >
           {STATUS_ORDER.map((status) => (
             <Box
               key={status}
               sx={{
-                borderRadius: 2,
                 border: 1,
                 borderColor: "divider",
-                borderTop: 3,
-                borderTopColor: ACCENT_COLOR[statusColor(status)],
-                py: 1.5,
-                px: 1,
-                textAlign: "center",
+                borderLeftWidth: 4,
+                borderLeftColor: ACCENT_COLOR[statusColor(status)],
+                borderRadius: 1.5,
+                px: 1.75,
+                py: 1.25,
                 bgcolor: "background.paper",
               }}
             >
-              <Typography
-                variant="h4"
-                component="div"
-                fontWeight={700}
-                sx={{ fontSize: { xs: "1.6rem", sm: "2rem" }, lineHeight: 1.2 }}
-              >
+              <Typography variant="h5" fontWeight={800} lineHeight={1.1}>
                 {data.counts[status] ?? 0}
               </Typography>
               <Typography

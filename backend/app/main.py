@@ -1,53 +1,72 @@
-from collections.abc import Callable
+import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
-from flask import Flask
-from flask_cors import CORS
-from flask_smorest import Api
-from sqlalchemy.orm import Session
+import structlog
+from fastapi import FastAPI, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.base import RequestResponseEndpoint
 
-from app.api.blueprints.health import health_blueprint
-from app.api.blueprints.jobs import jobs_blueprint
-from app.api.deps import teardown_session
-from app.core.config import Settings, get_settings
-from app.core.logging import configure_logging
-from app.db.session import session_factory as default_session_factory
-from app.queue.redis_queue import JobQueue, create_queue
+from app.api.routes import health, jobs
+from app.core.config import get_settings
+from app.core.logging import configure_logging, get_logger
+from app.db.session import engine
+from app.queue.redis_queue import create_queue
 
-_SWAGGER_UI_CDN = "https://cdn.jsdelivr.net/npm/swagger-ui-dist/"
-_ALLOWED_HEADERS = ["Content-Type", "X-User-Id", "Idempotency-Key"]
+settings = get_settings()
+configure_logging(settings.log_level)
+logger = get_logger()
 
 
-def create_app(
-    *,
-    settings: Settings | None = None,
-    session_factory: Callable[[], Session] | None = None,
-    queue: JobQueue | None = None,
-) -> Flask:
-    settings = settings or get_settings()
-    configure_logging(settings.log_level)
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    app.state.queue = create_queue()
+    logger.info("orchestrator.api.startup")
+    yield
+    await app.state.queue.close()
+    await engine.dispose()
+    logger.info("orchestrator.api.shutdown")
 
-    app = Flask(__name__)
-    app.config["API_TITLE"] = "Distributed Job Orchestrator"
-    app.config["API_VERSION"] = "0.1.0"
-    app.config["OPENAPI_VERSION"] = "3.0.3"
-    app.config["OPENAPI_URL_PREFIX"] = "/"
-    app.config["OPENAPI_JSON_PATH"] = "openapi.json"
-    app.config["OPENAPI_SWAGGER_UI_PATH"] = "/docs"
-    app.config["OPENAPI_SWAGGER_UI_URL"] = _SWAGGER_UI_CDN
-    app.config["PROPAGATE_EXCEPTIONS"] = True
-    app.config["SESSION_FACTORY"] = session_factory or default_session_factory
-    app.config["JOB_QUEUE"] = queue or create_queue()
-    app.config["APP_SETTINGS"] = settings
 
-    CORS(
-        app,
-        origins=[origin.strip() for origin in settings.frontend_origin.split(",")],
-        allow_headers=_ALLOWED_HEADERS,
+app = FastAPI(title="Distributed Job Orchestrator", version="0.1.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[origin.strip() for origin in settings.frontend_origin.split(",")],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.middleware("http")
+async def bind_request_context(request: Request, call_next: RequestResponseEndpoint) -> Response:
+    request_id = str(uuid.uuid4())
+    structlog.contextvars.bind_contextvars(correlation_id=request_id)
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        structlog.contextvars.clear_contextvars()
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    return JSONResponse(status_code=exc.status_code, content={"message": exc.detail})
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content={"message": "request validation failed", "errors": jsonable_encoder(exc.errors())},
     )
 
-    api = Api(app)
-    api.register_blueprint(health_blueprint)
-    api.register_blueprint(jobs_blueprint)
 
-    app.teardown_appcontext(teardown_session)
-    return app
+app.include_router(health.router)
+app.include_router(jobs.router)

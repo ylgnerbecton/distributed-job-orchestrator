@@ -1,16 +1,20 @@
 import Alert from "@mui/material/Alert";
 import Button from "@mui/material/Button";
+import Dialog from "@mui/material/Dialog";
+import DialogActions from "@mui/material/DialogActions";
+import DialogContent from "@mui/material/DialogContent";
+import DialogTitle from "@mui/material/DialogTitle";
 import MenuItem from "@mui/material/MenuItem";
-import Snackbar from "@mui/material/Snackbar";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
+import useMediaQuery from "@mui/material/useMediaQuery";
+import { useTheme } from "@mui/material/styles";
 import { useState } from "react";
 import type { ChangeEvent } from "react";
 
 import { useSubmitJob } from "../api/queries";
 import type { IJobSubmitRequest, TJobPriority, TJobType } from "../api/types";
 import { titleCase } from "../format";
-import { Panel } from "./Panel";
 
 const JOB_TYPES: readonly TJobType[] = [
   "sleep",
@@ -19,7 +23,6 @@ const JOB_TYPES: readonly TJobType[] = [
   "always_fail",
   "llm_summary",
 ];
-
 const PRIORITIES: readonly TJobPriority[] = ["low", "normal", "high"];
 
 const DEFAULT_PAYLOADS: Record<TJobType, Record<string, unknown>> = {
@@ -41,7 +44,11 @@ const TYPE_DESCRIPTIONS: Record<TJobType, string> = {
 
 const DEFAULT_TYPE: TJobType = "sleep";
 const DEFAULT_PRIORITY: TJobPriority = "normal";
-const SNACKBAR_DURATION_MS = 5000;
+
+interface ISubmitJobDialogProps {
+  open: boolean;
+  onClose: () => void;
+}
 
 function stringifyPayload(value: Record<string, unknown>): string {
   return JSON.stringify(value, null, 2);
@@ -56,7 +63,12 @@ function parsePayload(raw: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
-export function SubmitJobForm(): JSX.Element {
+export function SubmitJobDialog({
+  open,
+  onClose,
+}: ISubmitJobDialogProps): JSX.Element {
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
   const submitMutation = useSubmitJob();
   const [jobType, setJobType] = useState<TJobType>(DEFAULT_TYPE);
   const [priority, setPriority] = useState<TJobPriority>(DEFAULT_PRIORITY);
@@ -66,7 +78,7 @@ export function SubmitJobForm(): JSX.Element {
   const [maxAttempts, setMaxAttempts] = useState<string>("");
   const [idempotencyKey, setIdempotencyKey] = useState<string>("");
   const [payloadError, setPayloadError] = useState<string | null>(null);
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [lastSubmittedId, setLastSubmittedId] = useState<string | null>(null);
 
   const handleTypeChange = (event: ChangeEvent<HTMLInputElement>): void => {
     const nextType = event.target.value as TJobType;
@@ -87,11 +99,7 @@ export function SubmitJobForm(): JSX.Element {
     }
     setPayloadError(null);
 
-    const request: IJobSubmitRequest = {
-      type: jobType,
-      payload,
-      priority,
-    };
+    const request: IJobSubmitRequest = { type: jobType, payload, priority };
     const parsedMaxAttempts = Number.parseInt(maxAttempts, 10);
     if (maxAttempts.trim().length > 0 && Number.isFinite(parsedMaxAttempts)) {
       request.maxAttempts = parsedMaxAttempts;
@@ -102,106 +110,108 @@ export function SubmitJobForm(): JSX.Element {
 
     submitMutation.mutate(request, {
       onSuccess: (result) => {
-        setFeedback(`Submitted job ${result.jobId}`);
+        setLastSubmittedId(result.jobId);
+        setIdempotencyKey("");
       },
     });
   };
 
-  const isSubmitting = submitMutation.isPending;
-
   return (
-    <Panel title="Submit Job">
-      <Stack spacing={2}>
-        <TextField
-          select
-          label="Type"
-          value={jobType}
-          onChange={handleTypeChange}
-          helperText={TYPE_DESCRIPTIONS[jobType]}
-          fullWidth
-          size="small"
-        >
-          {JOB_TYPES.map((type) => (
-            <MenuItem key={type} value={type}>
-              {titleCase(type)}
-            </MenuItem>
-          ))}
-        </TextField>
-
-        <TextField
-          select
-          label="Priority"
-          value={priority}
-          onChange={(event) => setPriority(event.target.value as TJobPriority)}
-          fullWidth
-          size="small"
-        >
-          {PRIORITIES.map((value) => (
-            <MenuItem key={value} value={value}>
-              {titleCase(value)}
-            </MenuItem>
-          ))}
-        </TextField>
-
-        <TextField
-          label="Payload (JSON)"
-          value={payloadText}
-          onChange={(event) => setPayloadText(event.target.value)}
-          error={payloadError !== null}
-          helperText={payloadError ?? " "}
-          multiline
-          minRows={5}
-          fullWidth
-          size="small"
-          sx={{ "& textarea": { fontFamily: "ui-monospace, monospace" } }}
-        />
-
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+    <Dialog
+      open={open}
+      onClose={onClose}
+      maxWidth="sm"
+      fullWidth
+      fullScreen={fullScreen}
+    >
+      <DialogTitle>Submit a job</DialogTitle>
+      <DialogContent dividers>
+        <Stack spacing={2} sx={{ pt: 0.5 }}>
           <TextField
-            label="Max attempts"
-            value={maxAttempts}
-            onChange={(event) => setMaxAttempts(event.target.value)}
-            type="number"
-            size="small"
+            select
+            label="Type"
+            value={jobType}
+            onChange={handleTypeChange}
+            helperText={TYPE_DESCRIPTIONS[jobType]}
             fullWidth
-            slotProps={{ htmlInput: { min: 1 } }}
-          />
+            size="small"
+          >
+            {JOB_TYPES.map((type) => (
+              <MenuItem key={type} value={type}>
+                {titleCase(type)}
+              </MenuItem>
+            ))}
+          </TextField>
+
           <TextField
-            label="Idempotency-Key"
-            value={idempotencyKey}
-            onChange={(event) => setIdempotencyKey(event.target.value)}
-            size="small"
+            select
+            label="Priority"
+            value={priority}
+            onChange={(event) =>
+              setPriority(event.target.value as TJobPriority)
+            }
             fullWidth
+            size="small"
+          >
+            {PRIORITIES.map((value) => (
+              <MenuItem key={value} value={value}>
+                {titleCase(value)}
+              </MenuItem>
+            ))}
+          </TextField>
+
+          <TextField
+            label="Payload (JSON)"
+            value={payloadText}
+            onChange={(event) => setPayloadText(event.target.value)}
+            error={payloadError !== null}
+            helperText={payloadError ?? " "}
+            multiline
+            minRows={5}
+            fullWidth
+            size="small"
+            sx={{ "& textarea": { fontFamily: "ui-monospace, monospace" } }}
           />
+
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+            <TextField
+              label="Max attempts"
+              value={maxAttempts}
+              onChange={(event) => setMaxAttempts(event.target.value)}
+              type="number"
+              size="small"
+              fullWidth
+              slotProps={{ htmlInput: { min: 1 } }}
+            />
+            <TextField
+              label="Idempotency-Key"
+              value={idempotencyKey}
+              onChange={(event) => setIdempotencyKey(event.target.value)}
+              size="small"
+              fullWidth
+            />
+          </Stack>
+
+          {submitMutation.isError && (
+            <Alert severity="error">{submitMutation.error.message}</Alert>
+          )}
+          {lastSubmittedId !== null && !submitMutation.isError && (
+            <Alert severity="success" onClose={() => setLastSubmittedId(null)}>
+              Submitted job {lastSubmittedId}
+            </Alert>
+          )}
         </Stack>
-
-        {submitMutation.isError && (
-          <Alert severity="error">{submitMutation.error.message}</Alert>
-        )}
-
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Close</Button>
         <Button
           variant="contained"
           onClick={handleSubmit}
-          disabled={isSubmitting}
+          disabled={submitMutation.isPending}
         >
-          {isSubmitting ? "Submitting..." : "Submit"}
+          {submitMutation.isPending ? "Submitting..." : "Submit"}
         </Button>
-      </Stack>
-
-      <Snackbar
-        open={feedback !== null}
-        autoHideDuration={SNACKBAR_DURATION_MS}
-        onClose={() => setFeedback(null)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-      >
-        <Alert
-          severity="success"
-          onClose={() => setFeedback(null)}
-          sx={{ width: "100%" }}
-        >
-          {feedback}
-        </Alert>
-      </Snackbar>
-    </Panel>
+      </DialogActions>
+    </Dialog>
   );
 }

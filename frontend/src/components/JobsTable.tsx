@@ -1,3 +1,4 @@
+import AddIcon from "@mui/icons-material/Add";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -24,7 +25,6 @@ import type { IJobSummary, TJobStatus, TJobType } from "../api/types";
 import {
   formatAttempts,
   formatRelativeTime,
-  isActiveStatus,
   isCancellable,
   priorityColor,
   progressColor,
@@ -70,7 +70,7 @@ function flattenUnique(pages: { items: IJobSummary[] }[]): IJobSummary[] {
 }
 
 function ProgressCell({ job }: { job: IJobSummary }): JSX.Element {
-  if (isActiveStatus(job.status)) {
+  if (job.status === "running" || job.status === "retrying") {
     return (
       <Box
         sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 120 }}
@@ -183,7 +183,11 @@ function JobCard({
   );
 }
 
-export function JobsTable(): JSX.Element {
+interface IJobsTableProps {
+  onNewJob: () => void;
+}
+
+export function JobsTable({ onNewJob }: IJobsTableProps): JSX.Element {
   const theme = useTheme();
   const isCompact = useMediaQuery(theme.breakpoints.down("md"));
   const [statusFilter, setStatusFilter] = useState<TJobStatus | "">("");
@@ -274,12 +278,18 @@ export function JobsTable(): JSX.Element {
         ) : isError || data === undefined ? (
           <Alert severity="error">Failed to load jobs.</Alert>
         ) : jobs.length === 0 ? (
-          <Typography
-            color="text.secondary"
-            sx={{ py: 4, textAlign: "center" }}
-          >
-            No jobs match the current filters. Submit one to get started.
-          </Typography>
+          <Stack alignItems="center" spacing={1.5} sx={{ py: 6 }}>
+            <Typography color="text.secondary">
+              No jobs match the current filters.
+            </Typography>
+            <Button
+              variant="outlined"
+              startIcon={<AddIcon />}
+              onClick={onNewJob}
+            >
+              New job
+            </Button>
+          </Stack>
         ) : isCompact ? (
           <Stack spacing={1.25}>
             {jobs.map((job) => (
@@ -293,7 +303,7 @@ export function JobsTable(): JSX.Element {
             ))}
           </Stack>
         ) : (
-          <TableContainer sx={{ maxHeight: 520 }}>
+          <TableContainer sx={{ maxHeight: { xs: 480, md: 640 } }}>
             <Table size="small" stickyHeader>
               <TableHead>
                 <TableRow>

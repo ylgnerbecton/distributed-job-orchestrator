@@ -1,14 +1,18 @@
-def _submit(client, **overrides) -> str:
+from httpx import AsyncClient
+
+
+async def _submit(client: AsyncClient, **overrides) -> str:
     payload = {"type": "report", "payload": {"pages": 1}}
     payload.update(overrides)
-    return client.post("/jobs", json=payload).get_json()["job_id"]
+    response = await client.post("/jobs", json=payload)
+    return response.json()["job_id"]
 
 
-def test_list_pagination_covers_all_without_overlap(client) -> None:
+async def test_list_pagination_covers_all_without_overlap(client) -> None:
     total = 25
     page_size = 10
     for _ in range(total):
-        _submit(client)
+        await _submit(client)
 
     collected: list[dict] = []
     cursor: str | None = None
@@ -17,7 +21,7 @@ def test_list_pagination_covers_all_without_overlap(client) -> None:
         params: dict[str, object] = {"limit": page_size}
         if cursor is not None:
             params["cursor"] = cursor
-        body = client.get("/jobs", query_string=params).get_json()
+        body = (await client.get("/jobs", params=params)).json()
         collected.extend(body["items"])
         pages += 1
         if not body["has_more"]:
@@ -34,22 +38,23 @@ def test_list_pagination_covers_all_without_overlap(client) -> None:
     assert created_at_values == sorted(created_at_values, reverse=True)
 
 
-def test_invalid_cursor_returns_400(client) -> None:
-    assert client.get("/jobs", query_string={"cursor": "not-a-valid-cursor"}).status_code == 400
+async def test_invalid_cursor_returns_400(client) -> None:
+    response = await client.get("/jobs", params={"cursor": "not-a-valid-cursor"})
+    assert response.status_code == 400
 
 
-def test_filter_by_status(client) -> None:
-    _submit(client)
-    pending = client.get("/jobs", query_string={"status": "pending"}).get_json()
+async def test_filter_by_status(client) -> None:
+    await _submit(client)
+    pending = (await client.get("/jobs", params={"status": "pending"})).json()
     assert pending["items"]
     assert all(job["status"] == "pending" for job in pending["items"])
-    succeeded = client.get("/jobs", query_string={"status": "succeeded"}).get_json()
+    succeeded = (await client.get("/jobs", params={"status": "succeeded"})).json()
     assert succeeded["items"] == []
 
 
-def test_filter_by_type(client) -> None:
-    _submit(client, type="report")
-    _submit(client, type="sleep", payload={"duration_seconds": 1, "steps": 1})
-    body = client.get("/jobs", query_string={"type": "sleep"}).get_json()
+async def test_filter_by_type(client) -> None:
+    await _submit(client, type="report")
+    await _submit(client, type="sleep", payload={"duration_seconds": 1, "steps": 1})
+    body = (await client.get("/jobs", params={"type": "sleep"})).json()
     assert body["items"]
     assert all(job["type"] == "sleep" for job in body["items"])

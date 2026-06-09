@@ -1,4 +1,4 @@
-from redis import Redis
+from redis.asyncio import Redis
 
 from app.core.config import get_settings
 from app.domain.enums import JobPriority
@@ -16,31 +16,37 @@ class JobQueue:
     def _queue_key(self, priority: JobPriority) -> str:
         return f"{self._namespace}:queue:{priority.value}"
 
-    def publish(self, job_id: str, priority: JobPriority) -> None:
-        self._client.lpush(self._queue_key(priority), job_id)
+    async def publish(self, job_id: str, priority: JobPriority) -> None:
+        await self._client.lpush(self._queue_key(priority), job_id)
 
-    def consume(self, timeout_seconds: int) -> str | None:
-        result = self._client.brpop(self._priority_keys, timeout=timeout_seconds)
+    async def consume(self, timeout_seconds: int) -> str | None:
+        result = await self._client.brpop(self._priority_keys, timeout=timeout_seconds)
         if result is None:
             return None
         _key, value = result
         return value.decode() if isinstance(value, bytes) else str(value)
 
-    def dead_letter(self, job_id: str) -> None:
-        self._client.lpush(self._dead_letter_key, job_id)
+    async def dead_letter(self, job_id: str) -> None:
+        await self._client.lpush(self._dead_letter_key, job_id)
 
-    def depth(self) -> int:
-        return sum(int(self._client.llen(key)) for key in self._priority_keys)
+    async def depth(self) -> int:
+        total = 0
+        for key in self._priority_keys:
+            total += int(await self._client.llen(key))
+        return total
 
-    def dead_letter_depth(self) -> int:
-        return int(self._client.llen(self._dead_letter_key))
+    async def dead_letter_depth(self) -> int:
+        return int(await self._client.llen(self._dead_letter_key))
 
-    def ping(self) -> bool:
-        return bool(self._client.ping())
+    async def ping(self) -> bool:
+        return bool(await self._client.ping())
+
+    async def close(self) -> None:
+        await self._client.aclose()
 
 
 def create_redis_client(url: str) -> Redis:
-    return Redis.from_url(url, socket_keepalive=True, health_check_interval=30)
+    return Redis.from_url(url, socket_keepalive=True)
 
 
 def create_queue() -> JobQueue:

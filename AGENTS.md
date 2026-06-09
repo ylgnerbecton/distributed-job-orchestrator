@@ -8,8 +8,8 @@ service. These rules adapt a stricter house style to that reality.
 
 Distributed Job Orchestrator: an asynchronous job processing system. Users submit jobs through
 an HTTP API, jobs run on a horizontally scalable worker fleet, and users are notified when a job
-completes or fails. The backend is Flask plus flask-smorest plus SQLAlchemy 2.0 on PostgreSQL,
-with Redis as the durable queue. The frontend is React plus TypeScript plus Vite plus MUI plus
+completes or fails. The backend is FastAPI plus async SQLAlchemy 2.0 on PostgreSQL, with Redis
+(redis.asyncio) as the durable queue. The frontend is React plus TypeScript plus Vite plus MUI plus
 TanStack Query. Realtime status is polling. The full specification lives in `INSTRUCTIONS.md` and
 `PROJECT.md` at the repository root (kept local, not republished); that specification is the
 contract and wins any conflict about product behavior or API shape. The architecture reasoning
@@ -42,7 +42,7 @@ These are non-negotiable in every file and every language.
   Every function has an explicit return type. Every nullable value is handled explicitly.
 - All imports at module top. No imports inside functions or methods except a `TYPE_CHECKING`
   block to break a genuine import cycle.
-- External input is validated with marshmallow (backend) or typed parsing (frontend).
+- External input is validated with Pydantic v2 (backend) or typed parsing (frontend).
 - SQL is parameterized through SQLAlchemy. No string concatenation into queries.
 - No secrets in code or Compose. Use `${VAR}` passthrough and `.env` (git-ignored). Only
   `.env.example` is committed.
@@ -51,13 +51,14 @@ These are non-negotiable in every file and every language.
 ## Architecture rules
 
 - Layered backend (`backend/app`): `domain` (enums, the job state machine, the job-type handler
-  catalog, backoff, errors), `schemas` (marshmallow request and response models), `repositories`
-  (database access only, including the conditional state-transition UPDATEs), `services`
-  (use-case logic and transaction boundaries), `api/blueprints` (thin flask-smorest handlers),
+  catalog, backoff, errors), `schemas` (Pydantic v2 request and response models), `repositories`
+  (async database access only, including the conditional state-transition UPDATEs), `services`
+  (async use-case logic and transaction boundaries), `api/routes` (thin FastAPI routers),
   `workers` (the worker loop and the scheduler), `queue` (the Redis delivery abstraction).
 - Route handlers stay thin. Transaction-sensitive logic lives in services, never in handlers.
 - Repositories never own transactions. Services own transaction boundaries
-  (`with session.begin()`), so a use case commits exactly once.
+  (`async with session.begin()`), so a use case commits exactly once. Async sessions are provided
+  by FastAPI dependency injection.
 - The database is the source of truth for job state. The Redis queue is a delivery mechanism, not
   the source of truth. A queue message is a signal to execute a job, never the only record of it.
 - Business logic never lives inside SQLAlchemy models.
@@ -72,7 +73,7 @@ These are non-negotiable in every file and every language.
   Never read a status into Python, branch, then write it back. The row-count is the gate that
   makes duplicate at-least-once deliveries and concurrent workers safe.
 - A worker claims a job by transitioning it to `running` with a `locked_by` and a
-  `lock_expires_at` lease, then a background thread heartbeats to extend the lease. Every finalize
+  `lock_expires_at` lease, then a background asyncio task heartbeats to extend the lease. Every finalize
   (succeeded, failed, retrying, cancelled) is guarded by `locked_by` so a superseded worker cannot
   overwrite a reaped job.
 - Submission writes the job row and a `dispatch_outbox` row in one transaction (the transactional
@@ -90,23 +91,14 @@ are intentionally not applied here, because the assessment specification defines
 contract or scopes the concern out. Each deviation is a reasoned decision, recorded so reviewers
 understand it was a choice, not an oversight.
 
-- The stack is Flask plus flask-smorest (synchronous WSGI), not FastAPI plus async. The brief
-  targets a Python and Flask shop, and the architecture proposal in `docs/DESIGN.md` lands on
-  Flask, so the reference implementation is built on Flask to keep the proposal and the code
-  consistent and to demonstrate fit with the stack. Concurrency comes from running multiple API,
-  worker, and scheduler processes, which is the model the proposal recommends. This is the one
-  place the platform "async on every I/O path" mandate does not apply.
-- API request and response validation uses marshmallow, which flask-smorest is built on. Pydantic
-  is still used for typed configuration (`pydantic-settings`). Domain objects are plain typed
-  Python classes and dataclasses.
-- Database access uses synchronous SQLAlchemy 2.0 with the `psycopg` (v3) driver, not asyncpg.
 - No authentication. The specification scopes authentication out. Caller identity comes from an
   `X-User-Id` header (default `demo-user`) and ownership is enforced on every read and cancel.
   CORS is still restricted to the configured frontend origin (no wildcard).
 - Single-resource and bounded responses use explicit shapes; list endpoints use a generic
   `{ items, next_cursor, has_more }` envelope with keyset pagination. There is no generic
-  `ApiResponse[T]` wrapper.
-- Status-like columns are stored as strings and validated by Python `Enum` plus marshmallow, with
+  `ApiResponse[T]` wrapper. Error responses use FastAPI exception handlers returning
+  `{ "message": "..." }`.
+- Status-like columns are stored as strings and validated by Python `Enum` plus Pydantic, with
   no native PostgreSQL enum types, which keeps migrations simple while staying type-safe at the
   boundary.
 - No OpenTelemetry and no Prometheus in v1. The specification lists an observability stack as a

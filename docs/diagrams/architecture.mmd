@@ -3,7 +3,7 @@ flowchart LR
   dash["Dashboard<br/>React + MUI polling"]:::fe
   lb["API Gateway<br/>Load Balancer"]:::edge
 
-  subgraph api["Job API (Flask, stateless)"]
+  subgraph api["Job API (FastAPI, async)"]
     direction TB
     routes["routes<br/>POST /jobs, GET /jobs/{id},<br/>POST /jobs/{id}/cancel"]:::mod
   end
@@ -23,7 +23,7 @@ flowchart LR
 
   subgraph fleet["Worker Fleet (horizontally scalable)"]
     direction TB
-    worker["Worker<br/>claim lease, run handler,<br/>heartbeat, finalize"]:::mod
+    worker["Worker (async, N coroutines)<br/>claim lease, run handler,<br/>heartbeat task, finalize"]:::mod
   end
 
   sink["Delivery sinks<br/>LOG / signed webhook"]:::actor

@@ -1,11 +1,10 @@
 import hashlib
 import hmac
 import json
-from collections.abc import Callable
-from datetime import timedelta
+from datetime import datetime, timedelta
 
-import requests
-from sqlalchemy.orm import Session
+import httpx
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.clock import now as clock_now
 from app.core.config import Settings
@@ -18,7 +17,7 @@ from app.repositories.notification_outbox_repository import NotificationOutboxRe
 _logger = get_logger()
 
 
-def enqueue_terminal_notification(
+async def enqueue_terminal_notification(
     notifications: NotificationOutboxRepository,
     *,
     job: Job,
@@ -27,7 +26,7 @@ def enqueue_terminal_notification(
     result: dict | None,
     error_code: str | None,
     error_message: str | None,
-    now,
+    now: datetime,
 ) -> None:
     webhook = job.payload.get("notify_webhook") if isinstance(job.payload, dict) else None
     if webhook:
@@ -45,7 +44,7 @@ def enqueue_terminal_notification(
         "error_code": error_code,
         "error_message": error_message,
     }
-    notifications.enqueue(
+    await notifications.enqueue(
         job_id=job.id,
         user_id=job.user_id,
         channel=channel,
@@ -58,29 +57,29 @@ def enqueue_terminal_notification(
 
 
 class NotificationDeliveryService:
-    def __init__(self, session_factory: Callable[[], Session], settings: Settings) -> None:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession], settings: Settings) -> None:
         self._session_factory = session_factory
         self._settings = settings
 
-    def dispatch_due(self, batch_size: int) -> int:
-        with self._session_factory() as session, session.begin():
+    async def dispatch_due(self, batch_size: int) -> int:
+        async with self._session_factory() as session, session.begin():
             repository = NotificationOutboxRepository(session)
-            due = repository.claim_due(clock_now(), batch_size)
+            due = await repository.claim_due(clock_now(), batch_size)
             for notification in due:
-                self._attempt(repository, notification)
+                await self._attempt(repository, notification)
             return len(due)
 
-    def _attempt(self, repository: NotificationOutboxRepository, notification: NotificationOutbox) -> None:
+    async def _attempt(self, repository: NotificationOutboxRepository, notification: NotificationOutbox) -> None:
         try:
-            self._deliver(notification)
-        except requests.RequestException as error:
-            self._on_failure(repository, notification, str(error))
+            await self._deliver(notification)
+        except httpx.HTTPError as error:
+            await self._on_failure(repository, notification, str(error))
             return
-        repository.mark_sent(notification.id, clock_now())
+        await repository.mark_sent(notification.id, clock_now())
 
-    def _deliver(self, notification: NotificationOutbox) -> None:
+    async def _deliver(self, notification: NotificationOutbox) -> None:
         if notification.channel == NotificationChannel.WEBHOOK.value:
-            self._deliver_webhook(notification)
+            await self._deliver_webhook(notification)
             return
         _logger.info(
             "notification.delivered",
@@ -90,24 +89,24 @@ class NotificationDeliveryService:
             job_id=str(notification.job_id),
         )
 
-    def _deliver_webhook(self, notification: NotificationOutbox) -> None:
+    async def _deliver_webhook(self, notification: NotificationOutbox) -> None:
         body = json.dumps(notification.payload, default=str).encode()
         signature = hmac.new(self._settings.notification_signing_secret.encode(), body, hashlib.sha256).hexdigest()
-        response = requests.post(
-            notification.destination,
-            data=body,
-            headers={"Content-Type": "application/json", "X-Signature-SHA256": signature},
-            timeout=self._settings.notification_webhook_timeout_seconds,
-        )
-        response.raise_for_status()
+        async with httpx.AsyncClient(timeout=self._settings.notification_webhook_timeout_seconds) as client:
+            response = await client.post(
+                notification.destination,
+                content=body,
+                headers={"Content-Type": "application/json", "X-Signature-SHA256": signature},
+            )
+            response.raise_for_status()
 
-    def _on_failure(
+    async def _on_failure(
         self, repository: NotificationOutboxRepository, notification: NotificationOutbox, message: str
     ) -> None:
         attempts = notification.attempts + 1
         if attempts >= self._settings.notification_max_attempts:
-            repository.mark_failed(notification.id, message)
+            await repository.mark_failed(notification.id, message)
             _logger.warning("notification.exhausted", job_id=str(notification.job_id), error=message)
             return
         backoff = compute_backoff_seconds(attempts, self._settings)
-        repository.reschedule(notification.id, clock_now() + timedelta(seconds=backoff), message)
+        await repository.reschedule(notification.id, clock_now() + timedelta(seconds=backoff), message)

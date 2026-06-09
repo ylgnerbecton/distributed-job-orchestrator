@@ -2,7 +2,7 @@
 
 A system that accepts user-submitted jobs over an API, runs them asynchronously on a worker fleet, survives crashes and duplicate delivery, lets users watch and cancel work, and notifies them when a job reaches a terminal state. Written for a healthcare and financial-services context, so durability, auditability, and tenant isolation are treated as first-class constraints rather than afterthoughts.
 
-This document carries the reasoning and the trade-offs in the main body (sections 1 to 31) and pushes exhaustive detail (full schema, every endpoint, the outbox flow, Flask wiring, the metrics catalog, the full transition matrix) into the appendices (A to F). It maps directly onto the accompanying reference implementation: Flask plus flask-smorest API, PostgreSQL 16 as the source of truth, Redis as a durable delivery queue, and separate worker and scheduler processes.
+This document carries the reasoning and the trade-offs in the main body (sections 1 to 31) and pushes exhaustive detail (full schema, every endpoint, the outbox flow, FastAPI wiring, the metrics catalog, the full transition matrix) into the appendices (A to F). It maps directly onto the accompanying reference implementation: an asynchronous FastAPI API served by uvicorn (ASGI), PostgreSQL 16 as the source of truth accessed through async SQLAlchemy 2.0 over asyncpg, Redis as a durable delivery queue driven by redis.asyncio, and separate asyncio worker and scheduler processes.
 
 A note on language used throughout: this system is at-least-once with idempotent processing. It never claims exactly-once execution, because that is not a guarantee any honest distributed system can make across crashing workers and external dependencies.
 
@@ -91,15 +91,15 @@ These are decisions to confirm, not blockers. A senior engineer raises them befo
 
 The architecture is a pipeline of small, independently scalable parts connected by a database that holds the truth and a queue that moves work.
 
-The API service is stateless. It validates a submission, writes the job and a dispatch-outbox row in one transaction, and returns 202. It does not touch the queue on the request path; that decoupling is what keeps submission fast and the dual-write safe.
+The API service is a stateless asynchronous ASGI service (FastAPI served by uvicorn). It validates a submission, writes the job and a dispatch-outbox row in one transaction, and returns 202. It does not touch the queue on the request path; that decoupling is what keeps submission fast and the dual-write safe.
 
 PostgreSQL holds every job as a row in a state machine. State only ever changes through guarded conditional UPDATEs, so two actors racing on the same job cannot both win. The database also holds the per-attempt audit, the append-only event timeline, and both outboxes.
 
 Redis is the durable queue. It has three lists (high, normal, low) consumed by a single blocking pop in priority order, so a high-priority job jumps ahead of normal and low work without a separate consumer. The queue carries job ids only; the payload stays in the database.
 
-Workers are stateless processes. Each one blocking-pops a job id, claims the job with a conditional UPDATE that is simultaneously the state transition and the distributed lock, runs the handler outside any transaction, heartbeats on a background thread to extend its lease, and finalizes the job in a short transaction that also enqueues the terminal notification.
+Workers are stateless asyncio processes. Each one runs several consumer coroutines concurrently (worker_concurrency, default 4); each coroutine blocking-pops a job id, claims the job with a conditional UPDATE that is simultaneously the state transition and the distributed lock, runs the handler outside any transaction, heartbeats from an asyncio task to extend its lease, and finalizes the job in a short transaction that also enqueues the terminal notification.
 
-The scheduler is one lightweight process running six control loops on a fixed interval. It is the system's liveness engine: it publishes from the outbox, promotes due retries, reaps expired leases (crashed workers), re-publishes stuck queued jobs, expires stale jobs, and delivers notifications.
+The scheduler is one lightweight asyncio process running six control loops on a fixed interval. It is the system's liveness engine: it publishes from the outbox, promotes due retries, reaps expired leases (crashed workers), re-publishes stuck queued jobs, expires stale jobs, and delivers notifications.
 
 The status channel is polling for v1. The React dashboard polls GET /jobs and GET /jobs/{id}. SSE is the documented upgrade.
 
@@ -119,7 +119,7 @@ The status channel is polling for v1. The React dashboard polls GET /jobs and GE
                             |
                             v
                   +-------------------+
-                  | Job API (Flask)   |
+                  | Job API (FastAPI) |
                   +----+---------+----+
                        |         |
                        |         v
@@ -182,8 +182,8 @@ For each component: responsibility, design details, failure behavior, scaling.
 ### API Gateway / Load Balancer
 Responsibility: route traffic, terminate TLS, enforce request-size limits, apply rate limiting, integrate authentication. Design: stateless edge where admission control begins. Failure: a saturated edge must shed load predictably (reject with a clear status code), not queue unboundedly and time out. Scaling: stateless, horizontal.
 
-### Job API Service (Flask)
-Responsibility: validate the submission, authorize the user, cap payload size, create the job row, enforce the idempotency key, write the dispatch-outbox row, and serve status, list, summary, cancel, and events endpoints. Design: submission writes two rows in one transaction and returns 202; it never runs the job and never publishes to the queue directly. Failure: if the process dies after the commit, the job is safe in the database and the scheduler will publish it from the outbox. Scaling: stateless Flask behind gunicorn, scaled horizontally.
+### Job API Service (FastAPI)
+Responsibility: validate the submission, authorize the user, cap payload size, create the job row, enforce the idempotency key, write the dispatch-outbox row, and serve status, list, summary, cancel, and events endpoints. Design: an asynchronous ASGI service; submission writes two rows in one transaction (`async with session.begin()`, the session injected per request by FastAPI dependency injection) and returns 202; it never runs the job and never publishes to the queue directly. Validation is Pydantic v2 at the boundary, returning 422 automatically, and OpenAPI 3.1 plus Swagger UI are generated at /docs. Failure: if the process dies after the commit, the job is safe in the database and the scheduler will publish it from the outbox. Scaling: stateless uvicorn workers (ASGI), scaled horizontally. Why FastAPI fits: this is an I/O-bound orchestrator, so the API and the worker fleet spend their time on database, Redis, and HTTP I/O rather than on CPU; native async lets each process hold many of those operations in flight concurrently without blocking a thread per request, Pydantic v2 validation guards every boundary, and the OpenAPI 3.1 contract is generated rather than maintained by hand.
 
 ### Job State Store (PostgreSQL)
 Responsibility: source of truth for job metadata, the state machine, attempts, timestamps, lease columns, cancellation requests, ownership, idempotency records, the audit timeline, and both outboxes. Why relational fits: transactions make the outbox and the same-transaction notification possible; conditional UPDATEs make safe concurrent transitions possible; indexes make status queries and the scheduler's scans cheap; a relational store gives auditability and arbitrary lookup by job id, which a queue cannot. Failure: tolerate failover and elevated latency; status reads degrade before writes do. Scaling: index the hot queries (Appendix A), keep events append-only, archive terminal jobs, partition only if volume demands it.
@@ -374,10 +374,10 @@ The principle: state only ever changes through a guarded UPDATE whose WHERE clau
 Decision: a worker holds a time-bounded lease on a job, renewed by a background heartbeat, and a separate reaper recovers leases that expire.
 Reason: this is how the system distinguishes a slow-but-healthy job from a dead worker without killing the former or stranding the latter.
 Trade-off: a short lease recovers crashes faster but adds heartbeat write load; a long lease is cheaper but strands a crashed job's work for longer.
-Failure mode: a healthy worker is paused (GC, network blip) long enough for its lease to expire, the reaper requeues the job, and now two workers run it.
+Failure mode: a healthy worker is paused (GC, a blocked event loop, network blip) long enough that its heartbeat task cannot run and its lease expires, the reaper requeues the job, and now two workers run it.
 Mitigation: the lease is set comfortably longer than the heartbeat interval (60s lease, 15s heartbeat in the reference, four chances to renew before expiry), and the finalize guard on locked_by ensures the stale worker's late result is rejected. The job runs twice but only one result is ever committed, which is exactly the at-least-once contract.
 
-On claim, the worker sets locked_by, lock_expires_at, and heartbeat_at in the same UPDATE that marks the job running. A daemon thread re-stamps lock_expires_at every heartbeat interval. Progress updates also extend the lease, so an actively-working job never expires. The scheduler's lease reaper finds running jobs with lock_expires_at in the past and either requeues them (attempts remain) or fails and dead-letters them (attempts exhausted).
+On claim, the worker sets locked_by, lock_expires_at, and heartbeat_at in the same UPDATE that marks the job running. A per-job asyncio task re-stamps lock_expires_at every heartbeat interval. Progress updates also extend the lease, so an actively-working job never expires. The scheduler's lease reaper finds running jobs with lock_expires_at in the past and either requeues them (attempts remain) or fails and dead-letters them (attempts exhausted).
 
 ---
 
@@ -432,7 +432,7 @@ Concretely:
 
 ## 19. Security and Abuse Prevention
 
-Authentication and authorization gate the API. Ownership checks ensure a user can only read or cancel their own jobs; in the reference this is enforced on every read and cancel via an X-User-Id identity header, which is a deliberate stand-in for real auth (see the deviation note below). Payload size is capped and every input is validated by marshmallow schemas. Per-user rate limits and quotas blunt abuse and protect downstreams. Webhooks are signed with HMAC-SHA256 so receivers can verify authenticity. Sensitive payloads are encrypted, and secrets never travel in a payload. The audit timeline doubles as a security record.
+Authentication and authorization gate the API. Ownership checks ensure a user can only read or cancel their own jobs; in the reference this is enforced on every read and cancel via an X-User-Id identity header, which is a deliberate stand-in for real auth (see the deviation note below). Payload size is capped and every input is validated by Pydantic v2 schemas at the boundary, returning 422 automatically. Per-user rate limits and quotas blunt abuse and protect downstreams. Webhooks are signed with HMAC-SHA256 so receivers can verify authenticity. Sensitive payloads are encrypted, and secrets never travel in a payload. The audit timeline doubles as a security record.
 
 Deviation, stated plainly: v1 has no real authentication. It is explicitly out of scope for this exercise. Ownership is enforced through the X-User-Id header (defaulting to a demo user), which stands in for an authenticated principal. In production this header would be replaced by a verified token claim, with no change to the ownership logic that already scopes every query by user.
 
@@ -592,7 +592,7 @@ The hard parts were never the endpoints. They are correctness under at-least-onc
 
 # Appendix A. Data Model
 
-PostgreSQL 16, SQLAlchemy 2.0, Alembic migrations, psycopg3. Primary keys are UUIDv7 (time-ordered, which keeps index locality for the keyset pagination). All timestamps are timezone-aware.
+PostgreSQL 16, async SQLAlchemy 2.0 over the asyncpg driver, async Alembic migrations. Primary keys are UUIDv7 (time-ordered, which keeps index locality for the keyset pagination). All timestamps are timezone-aware.
 
 ## jobs (state machine and lease)
 | Column | Type | Notes |
@@ -648,7 +648,7 @@ Columns: id, job_id (fk), user_id, channel, destination, event_type, payload (js
 
 # Appendix B. API Surface
 
-Flask plus flask-smorest (OpenAPI 3 / Swagger UI), marshmallow schemas. Identity is the X-User-Id header (v1 stand-in for auth, default demo-user). Ownership is enforced on every read and cancel.
+FastAPI with built-in OpenAPI 3.1 plus Swagger UI at /docs, Pydantic v2 schemas. Errors are returned as JSON `{ "message": "..." }`; custom exception handlers preserve this shape across validation, ownership, conflict, and admission-control failures. Identity is the X-User-Id header (v1 stand-in for auth, default demo-user). Ownership is enforced on every read and cancel.
 
 ## POST /jobs
 Submit a job. Header: Idempotency-Key (optional, scoped per user).
@@ -660,7 +660,7 @@ Response 202:
 ```json
 { "job_id": "0190...uuid7", "status": "pending", "status_url": "/jobs/0190...uuid7" }
 ```
-202 is correct because processing is asynchronous. A duplicate Idempotency-Key returns the existing job. 413 if the payload exceeds the size cap; 422 on validation failure.
+202 is correct because processing is asynchronous. A duplicate Idempotency-Key returns the existing job. 413 if the payload exceeds the size cap; 422 on validation failure; 429 when the caller is over the admission-control limit (max_in_flight_jobs_per_user). Error responses use the JSON `{ "message": "..." }` shape.
 
 ## GET /jobs
 List the caller's jobs, cursor-paginated. Query: status, type, limit, cursor.
@@ -720,16 +720,19 @@ Liveness backstop: the stuck-queued reaper scans for jobs in status queued whose
 
 ---
 
-# Appendix D. Python / Flask Implementation Notes
+# Appendix D. Python / FastAPI Implementation Notes
 
-- API: stateless Flask behind gunicorn, horizontally scalable. flask-smorest provides OpenAPI and Swagger UI; marshmallow validates every input.
-- Persistence: SQLAlchemy 2.0 typed models for jobs, job_attempts, job_events, dispatch_outbox, notification_outbox; Alembic migrations; psycopg3 driver; a pooled session factory.
-- Delivery: Redis lists (high/normal/low) under a namespace; publish is LPUSH, consume is a single blocking BRPOP across the three keys in priority order, so priority needs no extra consumer. The dead-letter list is a fourth key.
-- Process topology: API, worker, and scheduler are separate deployables (separate containers in docker-compose; separate Deployments in Kubernetes). Workers and the scheduler are plain Python processes, not tied to the web server.
-- Worker model: blocking-pop, then claim via a guarded UPDATE; the handler runs outside any database transaction; a daemon heartbeat thread extends the lease; progress and cancellation checks are short, separate transactions; finalize is one guarded transaction that also enqueues the notification.
-- Scheduler model: one process, one tick on a fixed interval, six idempotent loops in order: dispatch_pending, promote_due (retries), reap_expired (leases), redeliver_stuck (queued), expire_stale, dispatch_due (notifications). Every loop is safe to run repeatedly because every write is a guarded UPDATE.
-- Configuration: a single Pydantic settings source (database and Redis URLs, lease and heartbeat seconds, scheduler interval and batch size, retry base/cap/jitter, payload cap, queue max age, notification cap and signing secret). No scattered constants.
-- Conditional transitions: implemented as UPDATE ... WHERE <precondition> with a rowcount or RETURNING check; rowcount 0 means "lost the race, do not proceed."
+- API: a stateless ASGI app served by uvicorn, horizontally scalable. FastAPI's built-in OpenAPI 3.1 and Swagger UI (/docs) describe the surface; Pydantic v2 validates every input at the boundary and returns 422 automatically. Custom exception handlers render all errors as JSON `{ "message": "..." }`.
+- Schemas: Pydantic v2 models per resource (JobCreate for the request, JobRead for the response, PaginatedJobs for the cursor-paginated list), so the boundary types are explicit and the OpenAPI contract is generated from them.
+- Persistence: async SQLAlchemy 2.0 typed models for jobs, job_attempts, job_events, dispatch_outbox, notification_outbox; async repositories over those models; async Alembic migrations; the asyncpg driver; an async engine with a pooled async-session factory.
+- Sessions: one async session per request, provided by FastAPI dependency injection and scoped to the request; writes run inside `async with session.begin()` so the job row and its outbox row commit together or not at all.
+- Delivery: redis.asyncio against Redis lists (high/normal/low) under a namespace; publish is LPUSH, consume is a single blocking BRPOP across the three keys in priority order, so priority needs no extra consumer. The dead-letter list is a fourth key.
+- Process topology: API, worker, and scheduler are separate deployables (separate containers in docker-compose; separate Deployments in Kubernetes). The worker and the scheduler are standalone asyncio processes, not tied to the web server.
+- Worker model: an asyncio consumer pool of worker_concurrency coroutines (default 4); each coroutine blocking-pops, then claims via a guarded async UPDATE; the handler runs outside any database transaction; a per-job asyncio task extends the lease; progress and cancellation checks are short, separate transactions; finalize is one guarded transaction that also enqueues the notification.
+- Scheduler model: one asyncio process, one tick on a fixed interval, six idempotent loops in order: dispatch_pending, promote_due (retries), reap_expired (leases), redeliver_stuck (queued), expire_stale, dispatch_due (notifications). Every loop is safe to run repeatedly because every write is a guarded UPDATE.
+- Outbound webhooks: signed notifications are delivered with httpx.AsyncClient, so a slow receiver does not block the dispatcher loop.
+- Configuration: a single Pydantic BaseSettings source (database and Redis URLs, lease and heartbeat seconds, worker_concurrency, scheduler interval and batch size, retry base/cap/jitter, payload cap, queue max age, max_in_flight_jobs_per_user, notification cap and signing secret). No scattered constants.
+- Conditional transitions: implemented as guarded async UPDATE ... WHERE <precondition> with a rowcount or RETURNING check; rowcount 0 means "lost the race, do not proceed."
 
 ---
 

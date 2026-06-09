@@ -125,6 +125,42 @@ filling gaps, and to reconsider whether Flask was the right choice.
   several imports had to be re-added once their usage was present. The lesson was to add the usage
   first, then the import.
 
+## Migration to FastAPI and a real layout redesign
+
+Two later prompts reversed earlier decisions: migrate the whole backend from Flask to FastAPI
+because it is the better solution, and stop proving the dashboard is responsive with screenshots
+and instead fix the screen itself so it uses space correctly.
+
+- FastAPI migration. The backend was rewritten end to end to asynchronous FastAPI: Pydantic v2
+  schemas instead of marshmallow, async SQLAlchemy 2.0 with asyncpg instead of synchronous psycopg,
+  redis.asyncio instead of the sync client, async repositories and services, the worker and
+  scheduler as asyncio processes (each worker runs a pool of consumer coroutines sized by
+  worker_concurrency), the per-job heartbeat as an asyncio task instead of a thread, httpx for
+  outbound webhooks, and FastAPI's generated OpenAPI 3.1 plus Swagger UI at /docs. Custom exception
+  handlers keep the error body as `{ "message": "..." }` so the existing frontend kept working
+  unchanged. The 48 tests were rewritten to pytest-asyncio plus httpx AsyncClient, including the
+  eight-concurrent-deliveries exactly-once test rebuilt with asyncio.gather. All 48 pass.
+- Two real bugs surfaced only when the live async stack was run, not by the unit tests. First, on
+  Python 3.10 `asyncio.TimeoutError` is a distinct class from the builtin `TimeoutError`, so the
+  scheduler's `except TimeoutError` did not catch its own interval timeout and the scheduler
+  crashed on the first tick; the unit tests passed because they never hit that timeout, and CI runs
+  on 3.12 where the two classes are merged. Second, the redis.asyncio client's `health_check_interval`
+  wrapped the blocking BRPOP read with a timeout that fired after about a minute, so the worker
+  logged the queue as unavailable and stopped consuming. Both were diagnosed by reading the worker
+  and scheduler logs and reproducing the Redis behavior in a small script, then fixed by catching
+  `asyncio.TimeoutError` explicitly (correct on 3.10 and 3.12) and dropping `health_check_interval`
+  while keeping socket keepalive. The re-run drained cleanly with four jobs running in parallel per
+  worker, retries firing, notifications delivered, and zero scheduler or worker errors.
+- Layout redesign. The earlier responsive-plus-screenshots work missed the real problem: the screen
+  wasted space. The layout was rebuilt so the jobs table is the full-width hero, job submission moved
+  into a New job dialog opened from the top bar (removing the cramped sidebar column), the status
+  panel became a compact full-width KPI strip with a per-status color accent, the content area was
+  widened, and a plain status word replaced the empty zero-percent progress bar for jobs that are not
+  running. The mobile card layout was kept.
+- The earlier defense of Flask was honest given the brief (a Flask shop), but once the constraint to
+  match that stack was lifted, FastAPI is the better fit for an I/O-bound orchestrator, and the owner
+  was right to make that call.
+
 ## Reflection
 
 - Where AI helped most: scaffolding a large, consistent, layered codebase quickly; writing the

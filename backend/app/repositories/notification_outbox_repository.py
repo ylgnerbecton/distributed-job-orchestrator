@@ -3,7 +3,7 @@ from datetime import datetime
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.ids import generate_uuid7
 from app.db.models import NotificationOutbox
@@ -11,10 +11,10 @@ from app.domain.enums import NotificationChannel, NotificationStatus
 
 
 class NotificationOutboxRepository:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    def enqueue(
+    async def enqueue(
         self,
         *,
         job_id: uuid.UUID,
@@ -43,9 +43,9 @@ class NotificationOutboxRepository:
             .on_conflict_do_nothing(index_elements=["dedupe_key"])
             .returning(NotificationOutbox.id)
         )
-        return self._session.execute(stmt).first() is not None
+        return (await self._session.execute(stmt)).first() is not None
 
-    def claim_due(self, now: datetime, limit: int) -> list[NotificationOutbox]:
+    async def claim_due(self, now: datetime, limit: int) -> list[NotificationOutbox]:
         stmt = (
             select(NotificationOutbox)
             .where(
@@ -56,9 +56,9 @@ class NotificationOutboxRepository:
             .limit(limit)
             .with_for_update(skip_locked=True)
         )
-        return list(self._session.execute(stmt).scalars().all())
+        return list((await self._session.execute(stmt)).scalars().all())
 
-    def mark_sent(self, notification_id: uuid.UUID, now: datetime) -> None:
+    async def mark_sent(self, notification_id: uuid.UUID, now: datetime) -> None:
         stmt = (
             update(NotificationOutbox)
             .where(NotificationOutbox.id == notification_id)
@@ -69,28 +69,22 @@ class NotificationOutboxRepository:
                 last_error=None,
             )
         )
-        self._session.execute(stmt)
+        await self._session.execute(stmt)
 
-    def reschedule(self, notification_id: uuid.UUID, next_attempt_at: datetime, last_error: str) -> None:
+    async def reschedule(self, notification_id: uuid.UUID, next_attempt_at: datetime, last_error: str) -> None:
+        stmt = (
+            update(NotificationOutbox)
+            .where(NotificationOutbox.id == notification_id)
+            .values(attempts=NotificationOutbox.attempts + 1, next_attempt_at=next_attempt_at, last_error=last_error)
+        )
+        await self._session.execute(stmt)
+
+    async def mark_failed(self, notification_id: uuid.UUID, last_error: str) -> None:
         stmt = (
             update(NotificationOutbox)
             .where(NotificationOutbox.id == notification_id)
             .values(
-                attempts=NotificationOutbox.attempts + 1,
-                next_attempt_at=next_attempt_at,
-                last_error=last_error,
+                status=NotificationStatus.FAILED.value, attempts=NotificationOutbox.attempts + 1, last_error=last_error
             )
         )
-        self._session.execute(stmt)
-
-    def mark_failed(self, notification_id: uuid.UUID, last_error: str) -> None:
-        stmt = (
-            update(NotificationOutbox)
-            .where(NotificationOutbox.id == notification_id)
-            .values(
-                status=NotificationStatus.FAILED.value,
-                attempts=NotificationOutbox.attempts + 1,
-                last_error=last_error,
-            )
-        )
-        self._session.execute(stmt)
+        await self._session.execute(stmt)

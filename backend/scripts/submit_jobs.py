@@ -1,4 +1,4 @@
-import requests
+import httpx
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
@@ -28,17 +28,18 @@ def demo_jobs() -> list[dict]:
 
 def submit_demo_jobs(target_url: str, user_id: str, rounds: int) -> int:
     submitted = 0
-    for _ in range(rounds):
-        for job in demo_jobs():
-            response = requests.post(f"{target_url}/jobs", json=job, headers={"X-User-Id": user_id}, timeout=10)
-            response.raise_for_status()
-            submitted += 1
-            _logger.info(
-                "demo.submitted",
-                job_id=response.json()["job_id"],
-                type=job["type"],
-                priority=job["priority"],
-            )
+    with httpx.Client(base_url=target_url, headers={"X-User-Id": user_id}, timeout=10) as client:
+        for _ in range(rounds):
+            for job in demo_jobs():
+                response = client.post("/jobs", json=job)
+                response.raise_for_status()
+                submitted += 1
+                _logger.info(
+                    "demo.submitted",
+                    job_id=response.json()["job_id"],
+                    type=job["type"],
+                    priority=job["priority"],
+                )
     return submitted
 
 

@@ -34,7 +34,7 @@ backend-install:
 	cd backend && python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 
 backend-dev:
-	cd backend && .venv/bin/flask --app app.wsgi run --host 0.0.0.0 --port 8000 --debug
+	cd backend && .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 worker-dev:
 	cd backend && .venv/bin/python -m app.workers.worker

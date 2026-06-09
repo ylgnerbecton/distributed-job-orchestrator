@@ -34,13 +34,13 @@ services:
       redis:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-orchestrator}:${POSTGRES_PASSWORD:-orchestrator}@postgres:5432/${POSTGRES_DB:-job_orchestrator}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-orchestrator}:${POSTGRES_PASSWORD:-orchestrator}@postgres:5432/${POSTGRES_DB:-job_orchestrator}
       REDIS_URL: redis://redis:6379/0
       API_HOST: 0.0.0.0
       API_PORT: 8000
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
       LOG_LEVEL: info
-    command: ["sh", "-c", "alembic upgrade head && gunicorn --bind 0.0.0.0:8000 --workers 2 app.wsgi:app"]
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"]
     ports:
       - "${BACKEND_HOST_PORT:-8000}:8000"
     healthcheck:
@@ -55,7 +55,7 @@ services:
       backend:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-orchestrator}:${POSTGRES_PASSWORD:-orchestrator}@postgres:5432/${POSTGRES_DB:-job_orchestrator}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-orchestrator}:${POSTGRES_PASSWORD:-orchestrator}@postgres:5432/${POSTGRES_DB:-job_orchestrator}
       REDIS_URL: redis://redis:6379/0
       LOG_LEVEL: info
     command: ["python", "-m", "app.workers.worker"]
@@ -68,7 +68,7 @@ services:
       backend:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-orchestrator}:${POSTGRES_PASSWORD:-orchestrator}@postgres:5432/${POSTGRES_DB:-job_orchestrator}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-orchestrator}:${POSTGRES_PASSWORD:-orchestrator}@postgres:5432/${POSTGRES_DB:-job_orchestrator}
       REDIS_URL: redis://redis:6379/0
       LOG_LEVEL: info
     command: ["python", "-m", "app.workers.scheduler"]

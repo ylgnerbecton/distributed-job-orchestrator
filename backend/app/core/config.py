@@ -15,8 +15,8 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    database_url: str = "postgresql+psycopg://orchestrator:orchestrator@localhost:5432/job_orchestrator"
-    test_database_url: str = "postgresql+psycopg://orchestrator:orchestrator@localhost:5432/job_orchestrator_test"
+    database_url: str = "postgresql+asyncpg://orchestrator:orchestrator@localhost:5432/job_orchestrator"
+    test_database_url: str = "postgresql+asyncpg://orchestrator:orchestrator@localhost:5432/job_orchestrator_test"
     redis_url: str = "redis://localhost:6379/0"
     redis_queue_namespace: str = "job_orchestrator"
 
@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     db_pool_size: int = 20
     db_max_overflow: int = 40
 
+    worker_concurrency: int = 4
     worker_lease_seconds: int = 60
     worker_heartbeat_seconds: int = 15
     worker_poll_timeout_seconds: int = 5

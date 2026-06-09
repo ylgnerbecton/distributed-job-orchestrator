@@ -1,5 +1,5 @@
-import time
-from collections.abc import Callable
+import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,12 +13,12 @@ class ExecutionContext:
     job_id: str
     attempt: int
     settings: Settings
-    check_cancelled: Callable[[], None]
-    report_progress: Callable[[int], None]
-    sleeper: Callable[[float], None] = field(default=time.sleep)
+    check_cancelled: Callable[[], Awaitable[None]]
+    report_progress: Callable[[int], Awaitable[None]]
+    sleep: Callable[[float], Awaitable[None]] = field(default=asyncio.sleep)
 
 
-JobHandler = Callable[[dict[str, Any], ExecutionContext], dict[str, Any]]
+JobHandler = Callable[[dict[str, Any], ExecutionContext], Awaitable[dict[str, Any]]]
 
 
 def _coerce_int(payload: dict[str, Any], key: str, default: int, minimum: int) -> int:
@@ -43,11 +43,11 @@ def _coerce_float(payload: dict[str, Any], key: str, default: float, minimum: fl
     return value
 
 
-def _run_steps(steps: int, step_seconds: float, context: ExecutionContext) -> None:
+async def _run_steps(steps: int, step_seconds: float, context: ExecutionContext) -> None:
     for index in range(steps):
-        context.check_cancelled()
-        context.sleeper(step_seconds)
-        context.report_progress(int((index + 1) / steps * 100))
+        await context.check_cancelled()
+        await context.sleep(step_seconds)
+        await context.report_progress(int((index + 1) / steps * 100))
 
 
 def _normalize_sleep(payload: dict[str, Any], settings: Settings) -> dict[str, Any]:
@@ -77,37 +77,36 @@ def _normalize_llm_summary(payload: dict[str, Any], settings: Settings) -> dict[
     }
 
 
-def _handle_sleep(payload: dict[str, Any], context: ExecutionContext) -> dict[str, Any]:
+async def _handle_sleep(payload: dict[str, Any], context: ExecutionContext) -> dict[str, Any]:
     duration = float(payload["duration_seconds"])
     steps = int(payload["steps"])
-    _run_steps(steps, duration / steps, context)
+    await _run_steps(steps, duration / steps, context)
     return {"slept_seconds": duration, "steps": steps}
 
 
-def _handle_report(payload: dict[str, Any], context: ExecutionContext) -> dict[str, Any]:
+async def _handle_report(payload: dict[str, Any], context: ExecutionContext) -> dict[str, Any]:
     pages = int(payload["pages"])
-    _run_steps(pages, context.settings.handler_step_seconds, context)
+    await _run_steps(pages, context.settings.handler_step_seconds, context)
     return {"report_ref": f"report://{context.job_id}", "pages": pages}
 
 
-def _handle_flaky(payload: dict[str, Any], context: ExecutionContext) -> dict[str, Any]:
+async def _handle_flaky(payload: dict[str, Any], context: ExecutionContext) -> dict[str, Any]:
     fail_times = int(payload["fail_times"])
-    context.check_cancelled()
+    await context.check_cancelled()
     if context.attempt <= fail_times:
         raise RetryableError("TRANSIENT_FAILURE", f"flaky job failing on attempt {context.attempt}")
     return {"succeeded_on_attempt": context.attempt}
 
 
-def _handle_always_fail(payload: dict[str, Any], context: ExecutionContext) -> dict[str, Any]:
+async def _handle_always_fail(payload: dict[str, Any], context: ExecutionContext) -> dict[str, Any]:
     raise NonRetryableError("INVALID_INPUT", "job type always_fail never succeeds by design")
 
 
-def _handle_llm_summary(payload: dict[str, Any], context: ExecutionContext) -> dict[str, Any]:
+async def _handle_llm_summary(payload: dict[str, Any], context: ExecutionContext) -> dict[str, Any]:
     tokens = int(payload["tokens"])
     if payload["simulate_rate_limit"] and context.attempt == 1:
         raise RetryableError("PROVIDER_RATE_LIMIT", "language model provider rate limit, retry with backoff")
-    steps = context.settings.handler_progress_steps
-    _run_steps(steps, context.settings.handler_step_seconds, context)
+    await _run_steps(context.settings.handler_progress_steps, context.settings.handler_step_seconds, context)
     prompt = payload["prompt"]
     summary = f"summary of {len(prompt)} character prompt" if prompt else "summary of empty prompt"
     return {"summary": summary, "tokens_used": tokens}

@@ -1,7 +1,6 @@
-from collections.abc import Callable
 from datetime import timedelta
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.clock import now as clock_now
 from app.core.config import Settings
@@ -16,27 +15,27 @@ _EXPIRED_MESSAGE = "job expired before it started running"
 
 
 class ExpiryService:
-    def __init__(self, session_factory: Callable[[], Session], settings: Settings) -> None:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession], settings: Settings) -> None:
         self._session_factory = session_factory
         self._settings = settings
 
-    def expire_stale(self, batch_size: int) -> int:
+    async def expire_stale(self, batch_size: int) -> int:
         now = clock_now()
         cutoff = now - timedelta(seconds=self._settings.job_queue_max_age_seconds)
         expired = 0
-        with self._session_factory() as session, session.begin():
+        async with self._session_factory() as session, session.begin():
             jobs = JobRepository(session)
             events = JobEventRepository(session)
             notifications = NotificationOutboxRepository(session)
-            for job in jobs.find_expirable(cutoff, batch_size):
-                if jobs.expire(job.id, now):
+            for job in await jobs.find_expirable(cutoff, batch_size):
+                if await jobs.expire(job.id, now):
                     events.record(
                         job_id=job.id,
                         event_type=JobEventType.EXPIRED,
                         from_status=JobStatus(job.status),
                         to_status=JobStatus.EXPIRED,
                     )
-                    enqueue_terminal_notification(
+                    await enqueue_terminal_notification(
                         notifications,
                         job=job,
                         event_type=JobEventType.EXPIRED,

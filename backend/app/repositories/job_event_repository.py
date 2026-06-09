@@ -1,14 +1,14 @@
 import uuid
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import JobEvent
 from app.domain.enums import JobEventType, JobStatus
 
 
 class JobEventRepository:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     def record(
@@ -30,11 +30,11 @@ class JobEventRepository:
             )
         )
 
-    def list_for_job(self, job_id: uuid.UUID, limit: int) -> list[JobEvent]:
+    async def list_for_job(self, job_id: uuid.UUID, limit: int) -> list[JobEvent]:
         stmt = (
             select(JobEvent)
             .where(JobEvent.job_id == job_id)
             .order_by(JobEvent.created_at.desc(), JobEvent.id.desc())
             .limit(limit)
         )
-        return list(self._session.execute(stmt).scalars().all())
+        return list((await self._session.execute(stmt)).scalars().all())

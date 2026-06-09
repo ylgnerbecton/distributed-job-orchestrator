@@ -1,23 +1,41 @@
-from flask import current_app, g, request
-from sqlalchemy.orm import Session
+from collections.abc import AsyncIterator
 
-_USER_HEADER = "X-User-Id"
+from fastapi import Depends, Header, Request
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import Settings, get_settings
+from app.db.session import session_factory
+from app.queue.redis_queue import JobQueue
+from app.services.job_cancellation_service import JobCancellationService
+from app.services.job_read_service import JobReadService
+from app.services.job_submission_service import JobSubmissionService
+
 _DEFAULT_USER_ID = "demo-user"
 
 
-def get_session() -> Session:
-    if "session" not in g:
-        g.session = current_app.config["SESSION_FACTORY"]()
-    return g.session
+async def get_db() -> AsyncIterator[AsyncSession]:
+    async with session_factory() as session:
+        yield session
 
 
-def teardown_session(exception: BaseException | None) -> None:
-    session = g.pop("session", None)
-    if session is not None:
-        if exception is not None:
-            session.rollback()
-        session.close()
+def get_queue(request: Request) -> JobQueue:
+    return request.app.state.queue
 
 
-def current_user_id() -> str:
-    return request.headers.get(_USER_HEADER, _DEFAULT_USER_ID)
+def current_user_id(x_user_id: str | None = Header(default=None)) -> str:
+    return x_user_id or _DEFAULT_USER_ID
+
+
+def get_submission_service(
+    session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> JobSubmissionService:
+    return JobSubmissionService(session, settings)
+
+
+def get_read_service(session: AsyncSession = Depends(get_db)) -> JobReadService:
+    return JobReadService(session)
+
+
+def get_cancellation_service(session: AsyncSession = Depends(get_db)) -> JobCancellationService:
+    return JobCancellationService(session)

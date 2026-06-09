@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import update
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.ids import generate_uuid7
 from app.db.models import JobAttempt
@@ -10,7 +10,7 @@ from app.domain.enums import JobStatus
 
 
 class JobAttemptRepository:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     def start(self, *, job_id: uuid.UUID, attempt_number: int, worker_id: str, now: datetime) -> uuid.UUID:
@@ -27,7 +27,7 @@ class JobAttemptRepository:
         )
         return attempt_id
 
-    def finish(
+    async def finish(
         self,
         *,
         attempt_id: uuid.UUID,
@@ -41,4 +41,4 @@ class JobAttemptRepository:
             .where(JobAttempt.id == attempt_id)
             .values(status=status.value, completed_at=now, error_code=error_code, error_message=error_message)
         )
-        self._session.execute(stmt)
+        await self._session.execute(stmt)

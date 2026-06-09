@@ -3,14 +3,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import update
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.ids import generate_uuid7
 from app.db.models import Job
 from app.domain.enums import JobPriority, JobStatus, JobType
 
 
-def make_job(session_factory: sessionmaker, **overrides: Any) -> uuid.UUID:
+async def make_job(session_factory: async_sessionmaker[AsyncSession], **overrides: Any) -> uuid.UUID:
     now = datetime.now(timezone.utc)
     values: dict[str, Any] = {
         "id": generate_uuid7(),
@@ -28,19 +28,19 @@ def make_job(session_factory: sessionmaker, **overrides: Any) -> uuid.UUID:
     }
     values.update(overrides)
     job = Job(**values)
-    with session_factory() as session, session.begin():
+    async with session_factory() as session, session.begin():
         session.add(job)
     return job.id
 
 
-def get_job(session_factory: sessionmaker, job_id: uuid.UUID) -> Job:
-    with session_factory() as session, session.begin():
-        return session.get(Job, job_id)
+async def get_job(session_factory: async_sessionmaker[AsyncSession], job_id: uuid.UUID) -> Job:
+    async with session_factory() as session, session.begin():
+        return await session.get(Job, job_id)
 
 
-def set_job_columns(session_factory: sessionmaker, job_id: uuid.UUID, **values: Any) -> None:
-    with session_factory() as session, session.begin():
-        session.execute(update(Job).where(Job.id == job_id).values(**values))
+async def set_job_columns(session_factory: async_sessionmaker[AsyncSession], job_id: uuid.UUID, **values: Any) -> None:
+    async with session_factory() as session, session.begin():
+        await session.execute(update(Job).where(Job.id == job_id).values(**values))
 
 
 def past(seconds: int = 120) -> datetime:

@@ -8,8 +8,8 @@ from app.db.models import NotificationOutbox
 from app.domain.enums import JobStatus
 
 
-def test_expired_lease_with_attempts_remaining_is_requeued(session_factory, lease_service, queue) -> None:
-    job_id = make_job(
+async def test_expired_lease_with_attempts_remaining_is_requeued(session_factory, lease_service, queue) -> None:
+    job_id = await make_job(
         session_factory,
         status=JobStatus.RUNNING.value,
         attempts=1,
@@ -17,15 +17,17 @@ def test_expired_lease_with_attempts_remaining_is_requeued(session_factory, leas
         locked_by="dead-worker",
         lock_expires_at=clock_now() - timedelta(seconds=30),
     )
-    assert lease_service.reap_expired(10) == 1
-    job = get_job(session_factory, job_id)
+    assert await lease_service.reap_expired(10) == 1
+    job = await get_job(session_factory, job_id)
     assert job.status == JobStatus.QUEUED.value
     assert job.locked_by is None
-    assert queue.depth() == 1
+    assert await queue.depth() == 1
 
 
-def test_expired_lease_exhausted_is_failed_and_dead_lettered(session_factory, lease_service, queue, session) -> None:
-    job_id = make_job(
+async def test_expired_lease_exhausted_is_failed_and_dead_lettered(
+    session_factory, lease_service, queue, session
+) -> None:
+    job_id = await make_job(
         session_factory,
         status=JobStatus.RUNNING.value,
         attempts=3,
@@ -33,19 +35,21 @@ def test_expired_lease_exhausted_is_failed_and_dead_lettered(session_factory, le
         locked_by="dead-worker",
         lock_expires_at=clock_now() - timedelta(seconds=30),
     )
-    lease_service.reap_expired(10)
-    job = get_job(session_factory, job_id)
+    await lease_service.reap_expired(10)
+    job = await get_job(session_factory, job_id)
     assert job.status == JobStatus.FAILED.value
     assert job.dead_lettered_at is not None
-    assert queue.dead_letter_depth() == 1
-    notifications = session.execute(
-        select(func.count()).select_from(NotificationOutbox).where(NotificationOutbox.job_id == job_id)
+    assert await queue.dead_letter_depth() == 1
+    notifications = (
+        await session.execute(
+            select(func.count()).select_from(NotificationOutbox).where(NotificationOutbox.job_id == job_id)
+        )
     ).scalar_one()
     assert notifications == 1
 
 
-def test_healthy_lease_is_not_reaped(session_factory, lease_service) -> None:
-    job_id = make_job(
+async def test_healthy_lease_is_not_reaped(session_factory, lease_service) -> None:
+    job_id = await make_job(
         session_factory,
         status=JobStatus.RUNNING.value,
         attempts=1,
@@ -53,5 +57,5 @@ def test_healthy_lease_is_not_reaped(session_factory, lease_service) -> None:
         locked_by="alive-worker",
         lock_expires_at=clock_now() + timedelta(seconds=60),
     )
-    assert lease_service.reap_expired(10) == 0
-    assert get_job(session_factory, job_id).status == JobStatus.RUNNING.value
+    assert await lease_service.reap_expired(10) == 0
+    assert (await get_job(session_factory, job_id)).status == JobStatus.RUNNING.value

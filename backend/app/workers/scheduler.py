@@ -1,10 +1,10 @@
+import asyncio
 import signal
-import threading
 
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
 from app.db.session import session_factory
-from app.queue.redis_queue import create_queue
+from app.queue.redis_queue import JobQueue, create_queue
 from app.services.dispatch_service import DispatchService
 from app.services.expiry_service import ExpiryService
 from app.services.lease_service import LeaseService
@@ -23,6 +23,7 @@ class Scheduler:
         lease: LeaseService,
         expiry: ExpiryService,
         notifications: NotificationDeliveryService,
+        queue: JobQueue,
         interval_seconds: float,
         batch_size: int,
     ) -> None:
@@ -31,30 +32,35 @@ class Scheduler:
         self._lease = lease
         self._expiry = expiry
         self._notifications = notifications
+        self._queue = queue
         self._interval_seconds = interval_seconds
         self._batch_size = batch_size
-        self._stop_event = threading.Event()
+        self._stop_event = asyncio.Event()
 
-    def request_stop(self, *_args: object) -> None:
+    def request_stop(self) -> None:
         self._stop_event.set()
 
-    def run(self) -> None:
+    async def run(self) -> None:
         _logger.info("scheduler.started")
         while not self._stop_event.is_set():
             try:
-                self.tick()
+                await self.tick()
             except Exception as error:
                 _logger.error("scheduler.tick_failed", error=str(error))
-            self._stop_event.wait(self._interval_seconds)
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=self._interval_seconds)
+            except asyncio.TimeoutError:
+                continue
+        await self._queue.close()
         _logger.info("scheduler.stopped")
 
-    def tick(self) -> None:
-        self._dispatch.dispatch_pending(self._batch_size)
-        self._retry.promote_due(self._batch_size)
-        self._lease.reap_expired(self._batch_size)
-        self._dispatch.redeliver_stuck(self._batch_size)
-        self._expiry.expire_stale(self._batch_size)
-        self._notifications.dispatch_due(self._batch_size)
+    async def tick(self) -> None:
+        await self._dispatch.dispatch_pending(self._batch_size)
+        await self._retry.promote_due(self._batch_size)
+        await self._lease.reap_expired(self._batch_size)
+        await self._dispatch.redeliver_stuck(self._batch_size)
+        await self._expiry.expire_stale(self._batch_size)
+        await self._notifications.dispatch_due(self._batch_size)
 
 
 def build_scheduler(settings: Settings) -> Scheduler:
@@ -65,18 +71,24 @@ def build_scheduler(settings: Settings) -> Scheduler:
         lease=LeaseService(session_factory, queue),
         expiry=ExpiryService(session_factory, settings),
         notifications=NotificationDeliveryService(session_factory, settings),
+        queue=queue,
         interval_seconds=settings.scheduler_interval_seconds,
         batch_size=settings.scheduler_batch_size,
     )
 
 
-def main() -> None:
+async def _run() -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
     scheduler = build_scheduler(settings)
-    signal.signal(signal.SIGINT, scheduler.request_stop)
-    signal.signal(signal.SIGTERM, scheduler.request_stop)
-    scheduler.run()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, scheduler.request_stop)
+    await scheduler.run()
+
+
+def main() -> None:
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

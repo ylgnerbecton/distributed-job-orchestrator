@@ -1,11 +1,15 @@
-from marshmallow import Schema, fields
+from pydantic import BaseModel, ConfigDict
 
 
-class HealthSchema(Schema):
-    status = fields.Str()
-    database = fields.Str()
-    queue = fields.Str()
+class HealthResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    status: str
+    database: str
+    queue: str
 
 
-class MessageSchema(Schema):
-    message = fields.Str()
+class ErrorResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    message: str

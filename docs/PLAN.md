@@ -5,7 +5,7 @@ shaped it. The full reasoning is in `DESIGN.md`; the one-page summary is in `ADR
 
 ## Build order
 
-1. Decisions and house rules. Picked the stack (Flask plus flask-smorest, PostgreSQL as source of
+1. Decisions and house rules. Picked the stack (FastAPI (async), PostgreSQL as source of
    truth, Redis as the durable queue, React plus MUI) and wrote `AGENTS.md` reconciling the strict
    house style with this external assessment, recording each deviation.
 2. Foundation. Config (Pydantic `BaseSettings`), structured logging, UUID7 helper, a testable
@@ -22,13 +22,15 @@ shaped it. The full reasoning is in `DESIGN.md`; the one-page summary is in `ADR
 6. Services. Submission (with idempotency), reads (with keyset pagination), cancellation
    (row-locked), the worker execution service (claim, heartbeat, run, finalize), and the scheduler
    services (outbox dispatch, retry promotion, lease reaping, expiry, notification delivery).
-7. API. Thin flask-smorest blueprints, the app factory with dependency injection points for the
-   session factory and the queue, CORS, and generated OpenAPI plus Swagger UI.
-8. Workers. The worker loop and the scheduler loop, both with graceful shutdown.
-9. Tests. 47 tests against real PostgreSQL and a fake Redis, written to prove the hard guarantees
-   rather than assert them.
-10. Frontend. The React plus MUI dashboard: status summary, submit form, cursor-paginated jobs
-    table with per-row cancel and a detail dialog with the event timeline.
+7. API. Thin FastAPI routers, the app factory with dependency injection points for the
+   session factory and the queue, CORS, and auto-generated Swagger UI at `/docs` (OpenAPI 3.1).
+8. Workers. The asyncio worker loop and the scheduler loop, both with graceful shutdown. Each
+   worker runs `WORKER_CONCURRENCY` consumer coroutines (default 4).
+9. Tests. 48 tests (pytest-asyncio) against real PostgreSQL and a fake async Redis, written to
+   prove the hard guarantees rather than assert them.
+10. Frontend. The React plus MUI dashboard: a full-width status overview strip, a New job
+    submission dialog, and a cursor-paginated jobs table with status and type filters, per-row
+    cancel, and a detail dialog with the event timeline.
 11. Infrastructure and docs. Docker Compose (postgres, redis, api, two workers, scheduler,
     frontend), Dockerfiles, Makefile, CI, the diagrams, the screenshots, and this documentation.
 
@@ -50,8 +52,9 @@ shaped it. The full reasoning is in `DESIGN.md`; the one-page summary is in `ADR
 - More moving parts (api, workers, scheduler, postgres, redis) in exchange for durability,
   observability, and recovery. Justified for a job orchestrator, whose whole point is asynchronous
   execution.
-- A custom worker loop instead of Celery or RQ, so the lease, heartbeat, conditional-transition,
-  and outbox mechanics are explicit and provable by tests rather than hidden in a framework.
+- A custom worker loop instead of Celery or RQ, implemented as an asyncio consumer pool, so the
+  lease, heartbeat, conditional-transition, and outbox mechanics are explicit and provable by tests
+  rather than hidden in a framework.
 - Holding the notification delivery inside one scheduler transaction is acceptable at this scale
   (single scheduler instance, default log channel); the claim-then-deliver refinement is noted as
   future work.
