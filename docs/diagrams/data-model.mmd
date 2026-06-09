@@ -1,0 +1,80 @@
+erDiagram
+  JOBS ||--o{ JOB_ATTEMPTS : "has"
+  JOBS ||--o{ JOB_EVENTS : "logs"
+  JOBS ||--o{ DISPATCH_OUTBOX : "dispatched via"
+  JOBS ||--o{ NOTIFICATION_OUTBOX : "notifies via"
+
+  JOBS {
+    uuid id PK
+    string user_id
+    string type
+    string status
+    string priority
+    jsonb payload
+    jsonb result
+    string error_code
+    string error_message
+    int progress
+    int attempts
+    int max_attempts
+    string idempotency_key "unique per user_id, partial"
+    timestamptz next_attempt_at
+    timestamptz cancellation_requested_at
+    string locked_by
+    timestamptz lock_expires_at
+    timestamptz heartbeat_at
+    timestamptz dead_lettered_at
+    timestamptz created_at
+    timestamptz queued_at
+    timestamptz started_at
+    timestamptz completed_at
+    timestamptz updated_at
+  }
+
+  JOB_ATTEMPTS {
+    uuid id PK
+    uuid job_id FK
+    int attempt_number "unique with job_id"
+    string worker_id
+    string status
+    timestamptz started_at
+    timestamptz completed_at
+    string error_code
+    string error_message
+  }
+
+  JOB_EVENTS {
+    uuid id PK
+    uuid job_id FK
+    string event_type
+    string from_status
+    string to_status
+    jsonb detail
+    timestamptz created_at
+  }
+
+  DISPATCH_OUTBOX {
+    uuid id PK
+    uuid job_id FK
+    string status
+    int attempts
+    timestamptz created_at
+    timestamptz published_at
+  }
+
+  NOTIFICATION_OUTBOX {
+    uuid id PK
+    uuid job_id FK
+    string user_id
+    string channel
+    string destination
+    string event_type
+    jsonb payload
+    string status
+    int attempts
+    timestamptz next_attempt_at
+    string dedupe_key "unique"
+    string last_error
+    timestamptz created_at
+    timestamptz sent_at
+  }

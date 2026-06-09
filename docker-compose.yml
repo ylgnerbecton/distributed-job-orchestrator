@@ -1,0 +1,86 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-orchestrator}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-orchestrator}
+      POSTGRES_DB: ${POSTGRES_DB:-job_orchestrator}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-orchestrator} -d ${POSTGRES_DB:-job_orchestrator}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-orchestrator}:${POSTGRES_PASSWORD:-orchestrator}@postgres:5432/${POSTGRES_DB:-job_orchestrator}
+      REDIS_URL: redis://redis:6379/0
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+      LOG_LEVEL: info
+    command: ["sh", "-c", "alembic upgrade head && gunicorn --bind 0.0.0.0:8000 --workers 2 app.wsgi:app"]
+    ports:
+      - "${BACKEND_HOST_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  worker:
+    build: ./backend
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-orchestrator}:${POSTGRES_PASSWORD:-orchestrator}@postgres:5432/${POSTGRES_DB:-job_orchestrator}
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: info
+    command: ["python", "-m", "app.workers.worker"]
+    deploy:
+      replicas: 2
+
+  scheduler:
+    build: ./backend
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-orchestrator}:${POSTGRES_PASSWORD:-orchestrator}@postgres:5432/${POSTGRES_DB:-job_orchestrator}
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: info
+    command: ["python", "-m", "app.workers.scheduler"]
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+    ports:
+      - "${FRONTEND_HOST_PORT:-5173}:5173"
+
+volumes:
+  postgres_data:

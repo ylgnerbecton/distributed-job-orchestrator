@@ -1,0 +1,41 @@
+sequenceDiagram
+  autonumber
+  participant Client
+  participant JobAPI
+  participant PostgreSQL
+  participant Scheduler
+  participant Redis
+  participant Worker
+
+  Client->>JobAPI: POST /jobs
+  JobAPI->>PostgreSQL: BEGIN (single transaction)
+  JobAPI->>PostgreSQL: insert job status pending
+  JobAPI->>PostgreSQL: insert dispatch_outbox row
+  JobAPI->>PostgreSQL: insert job_event submitted
+  JobAPI->>PostgreSQL: COMMIT
+  JobAPI-->>Client: 202 with job_id and status_url
+
+  Scheduler->>PostgreSQL: read pending dispatch_outbox
+  Scheduler->>PostgreSQL: BEGIN (single transaction)
+  Scheduler->>PostgreSQL: transition job pending to queued
+  Scheduler->>PostgreSQL: mark outbox published
+  Scheduler->>PostgreSQL: COMMIT
+  Scheduler->>Redis: LPUSH job_id to priority list
+
+  Worker->>Redis: BRPOP job_id
+  Worker->>PostgreSQL: conditional UPDATE claim queued to running, attempts + 1, set lease
+  loop while running
+    Worker->>PostgreSQL: heartbeat extends lease
+    Worker->>PostgreSQL: check cancellation_requested_at
+  end
+  Worker->>PostgreSQL: BEGIN (single transaction)
+  Worker->>PostgreSQL: mark job succeeded
+  Worker->>PostgreSQL: insert notification_outbox row
+  Worker->>PostgreSQL: COMMIT
+
+  Scheduler->>PostgreSQL: read notification_outbox
+  Scheduler->>Scheduler: deliver log or webhook
+  Scheduler->>PostgreSQL: mark notification sent
+
+  Client->>JobAPI: GET /jobs/{id}
+  JobAPI-->>Client: current status

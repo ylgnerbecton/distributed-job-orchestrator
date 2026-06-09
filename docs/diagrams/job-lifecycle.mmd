@@ -1,0 +1,28 @@
+stateDiagram-v2
+  [*] --> pending : submitted
+
+  pending --> queued : dispatched
+  pending --> cancelled : cancel before dispatch
+  pending --> expired : ttl elapsed
+
+  queued --> running : lease claimed
+  queued --> cancelled : cancel before claim
+  queued --> expired : ttl elapsed
+
+  running --> succeeded : handler ok
+  running --> failed : handler error, no retries
+  running --> retrying : retryable, attempts remain
+  running --> cancelling : cancel requested
+  running --> queued : lease expired, requeued
+
+  retrying --> queued : backoff elapsed
+  retrying --> cancelled : cancel during backoff
+
+  cancelling --> cancelled : stopped at checkpoint
+  cancelling --> succeeded : finished first
+  cancelling --> failed : errored before stop
+
+  succeeded --> [*]
+  failed --> [*]
+  cancelled --> [*]
+  expired --> [*]

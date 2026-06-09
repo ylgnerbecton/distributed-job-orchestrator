@@ -1,0 +1,56 @@
+flowchart LR
+  client["Client<br/>API consumer"]:::actor
+  dash["Dashboard<br/>React + MUI polling"]:::fe
+  lb["API Gateway<br/>Load Balancer"]:::edge
+
+  subgraph api["Job API (Flask, stateless)"]
+    direction TB
+    routes["routes<br/>POST /jobs, GET /jobs/{id},<br/>POST /jobs/{id}/cancel"]:::mod
+  end
+
+  db[("PostgreSQL - source of truth<br/>jobs, job_attempts, job_events,<br/>dispatch_outbox, notification_outbox")]:::db
+
+  subgraph sched["Scheduler process"]
+    direction TB
+    dispatcher["dispatch publisher"]:::mod
+    promoter["retry promoter"]:::mod
+    leasereaper["lease reaper"]:::mod
+    expiryreaper["expiry reaper"]:::mod
+    notifier["notification dispatcher"]:::mod
+  end
+
+  redis[("Redis - durable queue, delivery only<br/>priority lists high / normal / low<br/>dead-letter list")]:::queue
+
+  subgraph fleet["Worker Fleet (horizontally scalable)"]
+    direction TB
+    worker["Worker<br/>claim lease, run handler,<br/>heartbeat, finalize"]:::mod
+  end
+
+  sink["Delivery sinks<br/>LOG / signed webhook"]:::actor
+
+  client -->|requests| lb
+  dash -->|REST polling| lb
+  lb -->|forward| routes
+  routes -->|write + return 202| db
+
+  dispatcher -->|read dispatch_outbox| db
+  dispatcher -->|LPUSH job_id| redis
+  promoter -->|read retrying| db
+  promoter -->|LPUSH job_id| redis
+  leasereaper -->|requeue expired leases| db
+  expiryreaper -->|expire stale jobs| db
+
+  redis -->|BRPOP job_id| worker
+  worker -->|claim lease via conditional UPDATE| db
+  worker -->|results + notification_outbox row| db
+  worker -->|exhausted jobs| redis
+
+  notifier -->|read notification_outbox| db
+  notifier -->|deliver| sink
+
+  classDef actor fill:#e8eef9,stroke:#5b7bb4,color:#1a2a44;
+  classDef fe fill:#eafbea,stroke:#5aa55a,color:#1f3d1f;
+  classDef edge fill:#fff4e6,stroke:#cc8a3a,color:#5a3a14;
+  classDef mod fill:#ffffff,stroke:#1f6feb,color:#0b2e63;
+  classDef db fill:#f3e8ff,stroke:#8a5cd1,color:#3d1f63;
+  classDef queue fill:#ffe8ec,stroke:#d15c79,color:#631f33;

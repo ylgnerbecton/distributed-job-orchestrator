@@ -1,0 +1,33 @@
+sequenceDiagram
+  autonumber
+  participant Client
+  participant JobAPI
+  participant PostgreSQL
+  participant Scheduler
+  participant Redis
+  participant Worker
+
+  Note over Worker,Redis: RETRY path
+  Worker->>PostgreSQL: claim job queued to running
+  Worker->>Worker: run handler, raises retryable error
+  alt attempts < max_attempts
+    Worker->>PostgreSQL: set job retrying, next_attempt_at = now + backoff with jitter
+    Scheduler->>PostgreSQL: retry promoter moves retrying to queued
+    Scheduler->>Redis: LPUSH job_id
+  else final attempt exhausted
+    Worker->>PostgreSQL: set job failed and dead_lettered
+    Worker->>Redis: LPUSH job_id to dead-letter list
+  end
+
+  Note over Client,Worker: CANCELLATION of a running job
+  Client->>JobAPI: POST /jobs/{id}/cancel
+  JobAPI->>PostgreSQL: SELECT job FOR UPDATE
+  JobAPI->>PostgreSQL: set status cancelling, cancellation_requested_at
+  JobAPI-->>Client: 202 accepted
+  Worker->>PostgreSQL: next checkpoint reads cancellation_requested_at
+  alt cancellation observed first
+    Worker->>Worker: stop at a safe point
+    Worker->>PostgreSQL: finalize job cancelled, insert notification_outbox row
+  else job finishes first
+    Worker->>PostgreSQL: finalize job succeeded, cancelling to succeeded
+  end
